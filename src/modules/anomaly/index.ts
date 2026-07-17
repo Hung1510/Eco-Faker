@@ -100,6 +100,10 @@ export function maybeInjectRemoteShipping(
   order.shippingAddress = remoteAddress;
   order.shipping = newShipping;
   order.total = newTotal;
+  order.totalFormatted = new Intl.NumberFormat(config.locale, {
+    style: "currency",
+    currency: order.currency,
+  }).format(newTotal);
   order.anomaly = {
     type: "remote_surcharge",
     note: `Remote-region shipping to ${region.city}, ${region.state} -- $${REMOTE_SHIPPING_SURCHARGE} freight surcharge applied.`,

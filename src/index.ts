@@ -1,4 +1,10 @@
 export { generate, generateRecords, type StreamRecord } from "./generator.js";
+export { generateStores, type Store } from "./multi-store.js";
+export { createMockApiServer, TABLE_ROUTES, DEFAULT_CHAOS_OPTIONS, type ChaosOptions, type ServeOptions } from "./serve.js";
+export { buildOpenApiSpec } from "./openapi.js";
+export { attachLiveFeed, type LiveFeedOptions } from "./live.js";
+export { buildWebhookEvents, replayEvents, type WebhookEvent, type ReplayOptions } from "./webhook.js";
+export { diffDatasets, formatDiffReport, loadDatasetLike, type DiffReport } from "./diff.js";
 export { resolveConfig, DEFAULT_CONFIG, mergeOverrides } from "./config.js";
 export { SCENARIOS, resolveScenario, type ScenarioName } from "./scenarios.js";
 export { serialize } from "./output/index.js";

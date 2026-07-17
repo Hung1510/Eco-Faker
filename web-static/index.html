@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>eco-faker -- static playground</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --accent: #6ee7b7;
+    --accent2: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header { padding: 24px 32px 8px; }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  header a { color: var(--accent); }
+  .layout { display: grid; grid-template-columns: 280px 1fr; gap: 20px; padding: 20px 32px 40px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+  .controls label { display: block; font-size: 13px; color: var(--muted); margin: 16px 0 4px; }
+  .controls select {
+    width: 100%; background: #0f1115; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px; font-size: 13px;
+  }
+  .controls .value { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .controls input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+  .stat { background: #0f1115; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .stat .n { font-size: 20px; font-weight: 600; }
+  .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .charts .panel.wide { grid-column: 1 / -1; }
+  .chart-title { font-size: 13px; color: var(--muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  canvas { max-height: 260px; }
+  .anomaly-badges { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .badge {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    background: rgba(245, 158, 11, 0.15); color: var(--accent2); border: 1px solid rgba(245, 158, 11, 0.35);
+  }
+  .elapsed { color: var(--muted); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>eco-faker -- static playground</h1>
+    <p>Runs entirely in your browser -- no server, no API calls. Same generator that powers the CLI, bundled with esbuild. <a href="https://github.com/Hung1510/Eco-Faker">Source</a></p>
+  </header>
+
+  <div class="layout">
+    <div class="panel controls">
+      <label>Scenario preset</label>
+      <select id="scenario"></select>
+
+      <label>Users (scaleFactor): <span class="value" id="val-scaleFactor">150</span></label>
+      <input type="range" id="scaleFactor" min="10" max="1000" step="10" value="150" />
+
+      <label>Abandonment rate: <span class="value" id="val-abandonmentRate">0.35</span></label>
+      <input type="range" id="abandonmentRate" min="0" max="1" step="0.01" value="0.35" />
+
+      <label>Delay probability: <span class="value" id="val-delayProbability">0.15</span></label>
+      <input type="range" id="delayProbability" min="0" max="1" step="0.01" value="0.15" />
+
+      <label>Return rate: <span class="value" id="val-returnRate">0.08</span></label>
+      <input type="range" id="returnRate" min="0" max="1" step="0.01" value="0.08" />
+
+      <label>Multi-package rate: <span class="value" id="val-multiPackageRate">0.10</span></label>
+      <input type="range" id="multiPackageRate" min="0" max="1" step="0.01" value="0.1" />
+
+      <div class="stats" id="stats"></div>
+      <div class="anomaly-badges" id="anomalies"></div>
+      <div class="elapsed" id="elapsed"></div>
+    </div>
+
+    <div class="charts">
+      <div class="panel">
+        <div class="chart-title">Cart status breakdown</div>
+        <canvas id="cartChart"></canvas>
+      </div>
+      <div class="panel">
+        <div class="chart-title">Shipment status (delayed highlighted)</div>
+        <canvas id="shipmentChart"></canvas>
+      </div>
+      <div class="panel wide">
+        <div class="chart-title">Revenue by day</div>
+        <canvas id="revenueChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script src="./dist/bundle.js"></script>
+</body>
+</html>

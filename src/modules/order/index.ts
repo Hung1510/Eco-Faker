@@ -31,6 +31,11 @@ export function convertCartToOrder(
     new Date(cart.lastActivityDate).getTime() + rng.int(1, 30) * 60 * 1000
   );
 
+  const totalFormatted = new Intl.NumberFormat(config.locale, {
+    style: "currency",
+    currency: cart.currency,
+  }).format(total);
+
   return {
     id: faker.string.uuid(),
     cartId: cart.id,
@@ -40,6 +45,7 @@ export function convertCartToOrder(
     tax,
     shipping,
     total,
+    totalFormatted,
     currency: cart.currency,
     createdAt: createdAt.toISOString(),
     shippingAddress,

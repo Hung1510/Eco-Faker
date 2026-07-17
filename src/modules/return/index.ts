@@ -60,13 +60,20 @@ export function maybeGenerateReturnRequest(
       ? null
       : new Date(requestedAt.getTime() + rng.int(1, 7) * 24 * 60 * 60 * 1000).toISOString();
 
+  const finalRefundAmount = status === "rejected" ? 0 : refundAmount;
+  const refundAmountFormatted = new Intl.NumberFormat(config.locale, {
+    style: "currency",
+    currency: order.currency,
+  }).format(finalRefundAmount);
+
   return {
     id: faker.string.uuid(),
     orderId: order.id,
     userId: order.userId,
     reason: rng.pick(REASONS),
     status,
-    refundAmount: status === "rejected" ? 0 : refundAmount,
+    refundAmount: finalRefundAmount,
+    refundAmountFormatted,
     requestedAt: requestedAt.toISOString(),
     resolvedAt: resolvedAt && new Date(resolvedAt).getTime() <= now ? resolvedAt : null,
   };

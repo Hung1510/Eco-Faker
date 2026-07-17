@@ -3,6 +3,11 @@ import { Command } from "commander";
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { generate, generateRecords } from "./generator.js";
+import { generateStores } from "./multi-store.js";
+import { createMockApiServer } from "./serve.js";
+import { attachLiveFeed } from "./live.js";
+import { buildWebhookEvents, replayEvents } from "./webhook.js";
+import { diffDatasets, formatDiffReport, loadDatasetLike } from "./diff.js";
 import { serialize, type OutputFormat } from "./output/index.js";
 import { parsePrismaSchema } from "./introspect/prisma.js";
 import { parseDrizzleSchema } from "./introspect/drizzle.js";
@@ -27,46 +32,59 @@ program
   .description("Generate a stateful, relationally-consistent fake e-commerce dataset.")
   .version(TOOL_VERSION);
 
-program
-  .command("generate")
-  .description("Generate users, carts, abandoned checkouts, orders, shipments, and returns.")
-  .option("-u, --users <number>", "number of core users to generate (scaleFactor)", parseIntArg)
+/** Options shared by every command that ultimately calls generate()/generateRecords(). */
+function addCoreGenerateOptions(cmd: Command): Command {
+  return cmd
+    .option("-u, --users <number>", "number of core users to generate (scaleFactor)", parseIntArg)
+    .option("-s, --seed <number>", "deterministic PRNG seed", parseIntArg)
+    .option("-l, --locale <locale>", "locale (en-US, en-GB, es-ES, de-DE, fr-FR, vi-VN)")
+    .option("--historical-days <number>", "span of history to generate, in days", parseIntArg)
+    .option("--abandonment-rate <number>", "0..1 chance a cart is abandoned", parseFloatArg)
+    .option("--return-rate <number>", "0..1 chance a delivered order gets a return", parseFloatArg)
+    .option("--delay-probability <number>", "0..1 chance a shipment is delayed", parseFloatArg)
+    .option("--max-delay-days <number>", "max extra days added when delayed", parseIntArg)
+    .option("--no-anomalies", "disable anomaly injection entirely")
+    .option("--bot-cart-rate <number>", "0..1 chance of a bot-activity cart anomaly", parseFloatArg)
+    .option("--remote-shipping-rate <number>", "0..1 chance of a remote-region shipping surcharge anomaly", parseFloatArg)
+    .option(
+      "--contradictory-return-rate <number>",
+      "0..1 chance of a negative-reason return with a contradictory CSAT score",
+      parseFloatArg
+    )
+    .option(
+      "--scenario <name>",
+      `apply a named business-scenario preset (${Object.keys(SCENARIOS).join(" | ")}) before other flags`
+    );
+}
+
+/** Resolve scenario + explicit CLI flags into a single overrides object, exiting on an unknown scenario name. */
+function resolveOverrides(opts: Record<string, unknown>): Partial<EcoFakerConfig> {
+  const explicitOverrides = buildOverridesFromGenerateOpts(opts);
+  let scenarioOverrides: Partial<EcoFakerConfig> | undefined;
+  if (opts.scenario) {
+    try {
+      scenarioOverrides = resolveScenario(opts.scenario as string);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  }
+  return mergeOverrides(scenarioOverrides, explicitOverrides);
+}
+
+addCoreGenerateOptions(
+  program
+    .command("generate")
+    .description("Generate users, carts, abandoned checkouts, orders, shipments, and returns.")
+)
   .option("-f, --format <format>", "output format: json | sql | csv", "json")
   .option("-o, --output <path>", "output file path", "./eco-data.json")
-  .option("-s, --seed <number>", "deterministic PRNG seed", parseIntArg)
-  .option("-l, --locale <locale>", "locale (en-US, en-GB, es-ES, de-DE, fr-FR, vi-VN)")
-  .option("--historical-days <number>", "span of history to generate, in days", parseIntArg)
-  .option("--abandonment-rate <number>", "0..1 chance a cart is abandoned", parseFloatArg)
-  .option("--return-rate <number>", "0..1 chance a delivered order gets a return", parseFloatArg)
-  .option("--delay-probability <number>", "0..1 chance a shipment is delayed", parseFloatArg)
-  .option("--max-delay-days <number>", "max extra days added when delayed", parseIntArg)
-  .option("--no-anomalies", "disable anomaly injection entirely")
-  .option("--bot-cart-rate <number>", "0..1 chance of a bot-activity cart anomaly", parseFloatArg)
-  .option("--remote-shipping-rate <number>", "0..1 chance of a remote-region shipping surcharge anomaly", parseFloatArg)
-  .option(
-    "--contradictory-return-rate <number>",
-    "0..1 chance of a negative-reason return with a contradictory CSAT score",
-    parseFloatArg
-  )
-  .option(
-    "--scenario <name>",
-    `apply a named business-scenario preset (${Object.keys(SCENARIOS).join(" | ")}) before other flags`
-  )
+  .option("--stores <number>", "generate N independent stores (JSON output only)", parseIntArg)
   .option("--stream", "stream NDJSON records to stdout as they're produced, instead of writing a file")
   .option("--snapshot <path>", "also save the exact seed/config/referenceNow recipe to a .snapshot.json for later replay")
   .option("--mapping <path>", "apply a mapping.json (from `my-eco-gen init`) to target an existing DB schema's column names")
   .action(async (opts) => {
-    const explicitOverrides = buildOverridesFromGenerateOpts(opts);
-    let scenarioOverrides: Partial<EcoFakerConfig> | undefined;
-    if (opts.scenario) {
-      try {
-        scenarioOverrides = resolveScenario(opts.scenario);
-      } catch (err) {
-        console.error((err as Error).message);
-        process.exit(1);
-      }
-    }
-    const overrides = mergeOverrides(scenarioOverrides, explicitOverrides);
+    const overrides = resolveOverrides(opts);
     const referenceNow = Date.now();
 
     if (opts.snapshot) {
@@ -95,6 +113,23 @@ program
     if (!["json", "sql", "csv"].includes(format)) {
       console.error(`Unsupported format "${opts.format}". Use json, sql, or csv.`);
       process.exit(1);
+    }
+
+    if (opts.stores !== undefined) {
+      if (format !== "json") {
+        console.error("--stores is only supported with --format json for now.");
+        process.exit(1);
+      }
+      const stores = generateStores(overrides, referenceNow, opts.stores as number);
+      const outputPath = path.resolve(process.cwd(), opts.output);
+      mkdirSync(path.dirname(outputPath), { recursive: true });
+      writeFileSync(outputPath, JSON.stringify(stores, null, 2), "utf-8");
+      console.log(`Generated ${stores.length} store(s):`);
+      for (const store of stores) {
+        console.log(`  ${store.storeId}: ${store.dataset.users.length} users, ${store.dataset.orders.length} orders`);
+      }
+      console.log(`Written to ${outputPath} (json)`);
+      return;
     }
 
     const start = performance.now();
@@ -225,6 +260,143 @@ program
         console.log(`  ${key}: ${JSON.stringify(value)}`);
       }
       console.log("");
+    }
+  });
+
+addCoreGenerateOptions(
+  program
+    .command("serve")
+    .description(
+      "Spin up a mock REST API (json-server style) backed by a generated dataset -- build/demo a frontend against a realistic backend."
+    )
+)
+  .option("-p, --port <number>", "port to listen on", parseIntArg, 4000)
+  .option("--chaos", "inject random latency spikes, 500s, and 429s into every /api/* response")
+  .option("--chaos-latency-rate <number>", "0..1 chance of injected latency (with --chaos)", parseFloatArg)
+  .option("--chaos-error-rate <number>", "0..1 chance of a simulated 500 (with --chaos)", parseFloatArg)
+  .option("--chaos-rate-limit-rate <number>", "0..1 chance of a simulated 429 (with --chaos)", parseFloatArg)
+  .option("--api-key <key>", "require `Authorization: Bearer <key>` on every /api/* request")
+  .option("--no-openapi", "don't serve GET /openapi.json")
+  .option("--live", "also open a WebSocket at /live broadcasting a steady drip of dataset events")
+  .option("--live-interval-ms <number>", "ms between live broadcasts", parseIntArg, 800)
+  .action((opts) => {
+    const overrides = resolveOverrides(opts);
+    const referenceNow = Date.now();
+
+    console.error("Generating dataset...");
+    const start = performance.now();
+    const dataset = generate(overrides, referenceNow);
+    const elapsed = (performance.now() - start).toFixed(1);
+    console.error(
+      `Ready in ${elapsed}ms: ${dataset.users.length} users, ${dataset.orders.length} orders, ${dataset.shipments.length} shipments, ${dataset.returnRequests.length} returns.`
+    );
+
+    const port = opts.port as number;
+    const chaos = opts.chaos
+      ? {
+          ...(opts.chaosLatencyRate !== undefined ? { latencyRate: opts.chaosLatencyRate as number } : {}),
+          ...(opts.chaosErrorRate !== undefined ? { errorRate: opts.chaosErrorRate as number } : {}),
+          ...(opts.chaosRateLimitRate !== undefined ? { rateLimitRate: opts.chaosRateLimitRate as number } : {}),
+        }
+      : undefined;
+
+    const app = createMockApiServer(dataset, {
+      chaos: chaos && Object.keys(chaos).length > 0 ? chaos : opts.chaos ? true : undefined,
+      apiKey: opts.apiKey,
+      openapi: opts.openapi !== false,
+      port,
+    });
+
+    const server = app.listen(port, () => {
+      console.log(`Mock API running at http://localhost:${port}`);
+      console.log(`  GET http://localhost:${port}/api/orders?status=delivered&page=1&pageSize=25`);
+      console.log(`  GET http://localhost:${port}/api/shipments/:id`);
+      console.log(`  GET http://localhost:${port}/  (endpoint list + counts)`);
+      if (opts.openapi !== false) console.log(`  GET http://localhost:${port}/openapi.json  (import into Postman/Insomnia/Swagger UI)`);
+      if (opts.chaos) console.log(`  chaos mode ON: latency/500/429 injected into /api/* responses`);
+      if (opts.apiKey) console.log(`  auth ON: send "Authorization: Bearer ${opts.apiKey}" or every /api/* request gets a 401`);
+      if (opts.live) console.log(`  live feed: ws://localhost:${port}/live`);
+    });
+
+    if (opts.live) {
+      attachLiveFeed(server, overrides, referenceNow, { intervalMs: opts.liveIntervalMs as number });
+    }
+  });
+
+addCoreGenerateOptions(
+  program
+    .command("webhook")
+    .description(
+      "Replay the generated dataset as a paced, chronological stream of webhook events POSTed to a URL (or printed with --dry-run)."
+    )
+)
+  .requiredOption("--url <url>", "URL to POST each event to as JSON (ignored with --dry-run)")
+  .option("--speed <number>", "simulated seconds of dataset time per real second (higher = faster)", parseFloatArg, 3600)
+  .option("--max-wait-ms <number>", "cap on the real-world wait between any two events, in ms", parseIntArg, 5000)
+  .option("--events <list>", "comma-separated event types to emit (default: all)")
+  .option("--limit <number>", "stop after N events", parseIntArg)
+  .option("--dry-run", "print events instead of POSTing them")
+  .action(async (opts) => {
+    const overrides = resolveOverrides(opts);
+    const referenceNow = Date.now();
+
+    console.error("Building event timeline...");
+    const events = buildWebhookEvents(overrides, referenceNow);
+    console.error(`${events.length} events spanning the dataset's history. Replaying at ${opts.speed}x speed...`);
+
+    const eventTypes = opts.events ? new Set((opts.events as string).split(",").map((t) => t.trim())) : undefined;
+
+    let posted = 0;
+    let failed = 0;
+    const total = await replayEvents(
+      events,
+      { speed: opts.speed as number, maxWaitMs: opts.maxWaitMs as number, eventTypes, limit: opts.limit as number | undefined },
+      async (event, index, count) => {
+        if (opts.dryRun) {
+          console.log(`[${index + 1}/${count}] ${event.timestamp} ${event.type}`);
+          return;
+        }
+        try {
+          const res = await fetch(opts.url as string, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(event),
+          });
+          if (res.ok) posted++;
+          else failed++;
+          console.error(`[${index + 1}/${count}] ${event.type} -> ${res.status}`);
+        } catch (err) {
+          failed++;
+          console.error(`[${index + 1}/${count}] ${event.type} -> FAILED: ${(err as Error).message}`);
+        }
+      }
+    );
+
+    console.error(
+      opts.dryRun
+        ? `Dry run complete: ${total} events.`
+        : `Done: ${total} events replayed, ${posted} succeeded, ${failed} failed.`
+    );
+  });
+
+program
+  .command("diff")
+  .description(
+    "Structurally diff two datasets (from `generate --format json`) or snapshot recipes (from `generate --snapshot`): row counts, schema drift, status-distribution shifts."
+  )
+  .argument("<fileA>", "first dataset.json or snapshot.json")
+  .argument("<fileB>", "second dataset.json or snapshot.json")
+  .option("--fail-on-schema-change", "exit with code 1 if any table's field set differs between A and B")
+  .action((fileA: string, fileB: string, opts) => {
+    const a = loadDatasetLike(path.resolve(process.cwd(), fileA));
+    const b = loadDatasetLike(path.resolve(process.cwd(), fileB));
+    const report = diffDatasets(a, b);
+
+    console.log(formatDiffReport(report, fileA, fileB));
+
+    if (opts.failOnSchemaChange && report.hasSchemaChanges) {
+      console.error("\nSchema drift detected -- failing as requested by --fail-on-schema-change.");
+      process.exit(1);
     }
   });
 

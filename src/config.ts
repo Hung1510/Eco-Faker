@@ -1,28 +1,6 @@
 import { Ajv, type ErrorObject } from "ajv";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import type { EcoFakerConfig } from "./types.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// Resolve to the schema shipped alongside the package (works both from
-// src/ under tsx and from dist/ after build, since the schema is copied
-// to the package root -- see package.json "files").
-function loadSchema(): object {
-  const candidates = [
-    path.resolve(__dirname, "../config.schema.json"),
-    path.resolve(__dirname, "../../config.schema.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(readFileSync(candidate, "utf-8"));
-    } catch {
-      // try next candidate
-    }
-  }
-  throw new Error("eco-faker: could not locate config.schema.json");
-}
+import { configSchemaObject } from "./config-schema-object.js";
 
 export const DEFAULT_CONFIG: EcoFakerConfig = {
   seed: 1,
@@ -56,7 +34,7 @@ let cachedValidate: ((data: unknown) => boolean) & { errors?: ErrorObject[] | nu
 function getValidator() {
   if (!cachedValidate) {
     const ajv = new Ajv({ useDefaults: false, allErrors: true });
-    cachedValidate = ajv.compile(loadSchema());
+    cachedValidate = ajv.compile(configSchemaObject);
   }
   return cachedValidate;
 }

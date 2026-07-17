@@ -109,6 +109,7 @@ export interface Order {
   tax: number;
   shipping: number;
   total: number;
+  totalFormatted: string;
   currency: string;
   createdAt: string;
   shippingAddress: Address | null;
@@ -142,6 +143,7 @@ export interface ReturnRequest {
   reason: string;
   status: ReturnStatus;
   refundAmount: number;
+  refundAmountFormatted: string;
   requestedAt: string;
   resolvedAt: string | null;
   csatScore?: number;

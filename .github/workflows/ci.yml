@@ -42,6 +42,11 @@ jobs:
       - name: Smoke test (dist/, every scenario preset)
         run: npm run smoke-test
 
+      - name: Build static browser bundle and smoke-test it
+        run: |
+          npm run build:static
+          node scripts/smoke-test-static.cjs
+
   cli-e2e:
     name: CLI end-to-end (generate, replay, stream, init)
     runs-on: ubuntu-latest
@@ -77,3 +82,74 @@ jobs:
           for s in black-friday post-holiday-returns flash-sale supply-chain-crisis steady-state; do
             node dist/cli.js generate --scenario "$s" --users 20 --format json --output /tmp/"$s".json
           done
+
+      - name: diff detects zero drift comparing a run to itself
+        run: |
+          node dist/cli.js generate --users 20 --seed 4 --format json --output /tmp/diffSame.json
+          node dist/cli.js diff /tmp/diffSame.json /tmp/diffSame.json --fail-on-schema-change
+
+      - name: multi-store generates N independent stores
+        run: node dist/cli.js generate --stores 3 --users 10 --seed 1 --format json --output /tmp/stores.json
+
+  mock-api-e2e:
+    name: Mock API end-to-end (serve, chaos, auth, openapi, live)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+
+      - name: serve + basic REST endpoints
+        run: |
+          node dist/cli.js serve --users 50 --seed 1 --port 4500 &
+          SERVER_PID=$!
+          sleep 2
+          curl -sf "http://localhost:4500/" > /dev/null
+          curl -sf "http://localhost:4500/api/orders?pageSize=5" > /dev/null
+          curl -sf "http://localhost:4500/openapi.json" > /dev/null
+          kill $SERVER_PID
+
+      - name: chaos mode injects failures at the configured rate
+        run: |
+          node dist/cli.js serve --users 50 --seed 1 --port 4501 --chaos --chaos-error-rate 1 --chaos-rate-limit-rate 0 --chaos-latency-rate 0 &
+          SERVER_PID=$!
+          sleep 2
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:4501/api/orders")
+          kill $SERVER_PID
+          test "$STATUS" = "500"
+
+      - name: api-key auth rejects unauthenticated requests
+        run: |
+          node dist/cli.js serve --users 50 --seed 1 --port 4502 --api-key testkey &
+          SERVER_PID=$!
+          sleep 2
+          NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:4502/api/orders")
+          AUTHED=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer testkey" "http://localhost:4502/api/orders")
+          kill $SERVER_PID
+          test "$NOAUTH" = "401"
+          test "$AUTHED" = "200"
+
+      - name: openapi.json has no broken $ref pointers
+        run: |
+          node dist/cli.js serve --users 20 --seed 1 --port 4503 &
+          SERVER_PID=$!
+          sleep 2
+          curl -sf "http://localhost:4503/openapi.json" -o /tmp/openapi.json
+          kill $SERVER_PID
+          node -e "
+            const spec = require('/tmp/openapi.json');
+            const names = new Set(Object.keys(spec.components.schemas));
+            let refs = [];
+            (function walk(o){ if (Array.isArray(o)) return o.forEach(walk); if (o && typeof o === 'object') { if (typeof o['\$ref'] === 'string') refs.push(o['\$ref']); Object.values(o).forEach(walk); } })(spec);
+            const broken = refs.filter(r => !names.has(r.replace('#/components/schemas/','')));
+            if (broken.length > 0) { console.error('broken refs:', broken); process.exit(1); }
+            console.log('all', refs.length, 'refs resolve');
+          "
+
+      - name: webhook simulator dry-run produces chronological events
+        run: node dist/cli.js webhook --url http://example.invalid --users 30 --seed 2 --dry-run --limit 10

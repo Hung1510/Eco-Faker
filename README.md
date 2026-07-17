@@ -19,18 +19,23 @@ docker compose up --build
 
 - **Shopping carts** — line items, quantities, status (`active` / `abandoned` / `converted`)
 - **Abandoned checkouts** — recovery email timing, coupon offers, recovery outcome
-- **Orders** — financially exact (`subtotal + tax + shipping === total`), free-shipping threshold, missing-address edge case
+- **Orders** — financially exact (`subtotal + tax + shipping === total`), locale-aware formatted currency (`totalFormatted`), free-shipping threshold, missing-address edge case
 - **Shipment tracking** — realistic multi-stage event histories (`Label Created → Picked Up → In Transit → [Delayed] → Out for Delivery → Delivered`), multi-package orders
-- **Return requests** — only for delivered orders, weighted approve/reject/pending, partial or full refunds
+- **Return requests** — only for delivered orders, weighted approve/reject/pending, partial or full refunds, formatted refund amounts
 - **Scenario presets** — `--scenario black-friday` swaps in a whole tuned config bundle for a recognizable business situation
 - **Anomaly injection** — rare, high-value edge cases that stress-test downstream systems (see below)
 - **Deterministic** — same seed + same reference time → byte-identical dataset; snapshot/replay for exact reproducibility
 - **Three output formats** — JSON, SQL (Postgres-flavored `CREATE TABLE` + `INSERT`), CSV
 - **Schema-aware output** — point it at an existing Prisma, Drizzle, or SQLAlchemy schema and it maps its own columns onto yours
 - **High-volume streaming** — NDJSON straight to stdout, no dataset ever held fully in memory
-- **Interactive web playground** — sliders + live charts + RFM/cohort segmentation, backed by a small Express API
+- **Mock REST API** — `my-eco-gen serve` spins up a paginated, filterable, json-server-style API backed by a generated dataset, with optional chaos mode, API-key auth, an OpenAPI spec, and a live WebSocket event feed
+- **Webhook event simulator** — replay the dataset as a paced, chronological stream of `order.created`/`cart.abandoned`/`shipment.delivered`-style events POSTed to a URL
+- **Dataset diffing** — `my-eco-gen diff` reports row-count deltas, schema drift, and status-distribution shifts between two datasets or snapshots
+- **Multi-store mode** — `--stores N` generates N independent, distinctly-seeded stores in one call
+- **Interactive web playground** — sliders + live charts + RFM/cohort segmentation + side-by-side scenario comparison, backed by a small Express API
+- **Static browser demo** — the same generator bundled with esbuild and running with zero server, deployable straight to GitHub Pages
 - **One-command Postgres demo** — `docker compose up` generates a scenario and seeds a real database
-- **CI-tested** — GitHub Actions runs typecheck/tests/build/smoke-test/CLI e2e on every push, PR, and nightly
+- **CI-tested** — GitHub Actions runs typecheck/tests/build/smoke-test/CLI e2e/static-bundle-check on every push, PR, and nightly
 - **CLI** — `my-eco-gen generate --users 50 --format sql --output ./seed.sql`
 
 ## Install
@@ -100,6 +105,107 @@ import { generate, SCENARIOS, resolveScenario, mergeOverrides } from "eco-faker"
 const dataset = generate(mergeOverrides(resolveScenario("black-friday"), { scaleFactor: 500 }));
 ```
 
+---
+
+## Mock REST API ("json-server for e-commerce")
+
+Build or demo a frontend against a realistic, stateful backend without waiting on a real API:
+
+```bash
+my-eco-gen serve --users 300 --scenario black-friday --port 4000
+```
+
+```
+GET  /                                             endpoint list + row counts
+GET  /api/orders?status=delivered&page=2&pageSize=25
+GET  /api/orders?sort=total&order=desc
+GET  /api/shipments/:id
+GET  /api/users | /api/carts | /api/abandoned-checkouts | /api/orders | /api/shipments | /api/returns
+GET  /openapi.json                                 OpenAPI 3.0 spec -- import into Postman/Insomnia/Swagger UI
+```
+
+Any query param other than `page`/`pageSize`/`sort`/`order` is treated as an exact-match filter against that field (`?status=delivered`, `?userId=...`). It's deliberately simple -- no query language, just enough surface to build and demo a real UI against. All the usual flags apply (`--scenario`, `--seed`, `--bot-cart-rate`, etc.) since it's generating data through the same pipeline as `generate`.
+
+### Chaos mode -- don't just mock the happy path
+
+```bash
+my-eco-gen serve --users 300 --chaos
+my-eco-gen serve --users 300 --chaos --chaos-error-rate 0.2 --chaos-rate-limit-rate 0.1 --chaos-latency-rate 0.3
+```
+
+Every `/api/*` request rolls the dice: a simulated `429` (with a `Retry-After` header), a simulated `500`, an injected latency spike (300-2000ms by default), or -- most of the time -- the normal response. Defaults are `errorRate=0.05`, `rateLimitRate=0.05`, `latencyRate=0.2`; tune each independently. `/` and `/openapi.json` are never affected, so tooling and docs stay reachable even under chaos. This is the same "don't just generate the happy path" philosophy as anomaly injection, applied to the API layer instead of the data layer.
+
+### API-key auth simulation
+
+```bash
+my-eco-gen serve --users 300 --api-key my-secret-key
+curl -H "Authorization: Bearer my-secret-key" http://localhost:4000/api/orders
+```
+
+Every `/api/*` request without a matching `Authorization: Bearer <key>` header gets a `401`. One static key, no scopes or expiry -- the point is forcing frontend code to exercise its 401-handling path, not modeling real auth.
+
+### Live WebSocket event feed
+
+```bash
+my-eco-gen serve --users 300 --live --live-interval-ms 500
+```
+
+Opens `ws://localhost:4000/live`, broadcasting one dataset-derived event every `--live-interval-ms` (default 800ms) to every connected client -- literally "watch orders roll in" instead of a static chart. It reuses the same event list the webhook simulator builds, so a `shipment.delivered` message references a shipment also reachable via `GET /api/shipments/:id` on the same server -- consistent ids across the REST API and the live feed. Loops back to the start when the event list is exhausted.
+
+## Webhook event simulator
+
+Replay the dataset as a paced, chronological stream of webhook events -- exactly what a Stripe/Shopify-style webhook consumer needs to test against:
+
+```bash
+my-eco-gen webhook --url http://localhost:3000/webhooks --scenario post-holiday-returns --speed 3600
+my-eco-gen webhook --url https://example.com/hook --events order.created,shipment.delivered --limit 50 --dry-run
+```
+
+- `--speed 3600` means 1 simulated hour of dataset history per real second (so a 90-day `historicalDays` span replays in ~36 minutes; tune to taste).
+- `--max-wait-ms` (default 5000) caps the real-world wait between any two events, so a rare multi-day gap in the data doesn't stall the replay.
+- Shipment tracking is the richest source: every entry in a shipment's event history becomes its own webhook (`shipment.label_created`, `shipment.picked_up`, ..., `shipment.delayed`, `shipment.delivered`), each with its own real timestamp.
+- `--dry-run` prints `[i/n] timestamp type` instead of POSTing, so you can preview the timeline before pointing it at a real endpoint.
+
+Event types emitted: `user.created`, `cart.created`, `cart.abandoned`, `checkout.abandoned`, `checkout.recovery_email_sent`, `order.created`, `shipment.<status>` (per tracking-event stage), `return.requested`, `return.approved` / `return.rejected`.
+
+## Dataset diffing
+
+"Did this dependency bump silently change the shape of my data?" -- diff two datasets (from `generate --format json`) or two snapshot recipes (from `generate --snapshot`), auto-detected either way:
+
+```bash
+my-eco-gen diff ./before.json ./after.json
+my-eco-gen diff ./bug-42.snapshot.json ./bug-43.snapshot.json --fail-on-schema-change   # for CI
+```
+
+```
+Row counts (./before.json -> ./after.json):
+  users                    50 -> 50     (+0, +0.0%)
+  orders                   84 -> 75     (-9, -10.7%)
+  ...
+
+Schema drift (added/removed fields per table):
+  (none)
+
+Cart status distribution:
+  converted                84 -> 75     (-10.7%)
+  abandoned                35 -> 50     (+42.9%)
+  ...
+```
+
+Schema-drift detection only compares field sets when both sides actually sampled at least one row for that table -- an empty array on one side isn't evidence of a missing field, just missing data (an earlier version of this feature had that false-positive bug; there's a regression test for it now).
+
+## Multi-store / multi-tenant mode
+
+Generate N independent, distinctly-seeded stores in one call -- useful for marketplace or multi-tenant SaaS demo data:
+
+```bash
+my-eco-gen generate --stores 5 --users 200 --format json --output ./marketplace.json
+```
+
+Produces `[{ storeId: "store-1", dataset: {...} }, { storeId: "store-2", dataset: {...} }, ...]`, each store fully independent (own seed derived from the base seed + store index) but reproducible as a whole. **JSON output only for now** -- SQL/CSV would need a `store_id` column threaded through every canonical table, which isn't implemented yet.
+
+---
+
 ## Interactive visual playground
 
 A small full-stack demo: an Express API wrapping the real `generate()` call, and a vanilla-JS + Chart.js frontend with live sliders.
@@ -114,12 +220,36 @@ Adjust **Abandonment rate** or **Delay probability** and the cart-status pie cha
 
 The RFM panel (`GET /api/rfm`) buckets customers into Recency/Frequency/Monetary quartiles and labels them with simple rule-based segments (Champions, Loyal, Big Spenders, At Risk, New/One-time, Hibernating) -- illustrative cohort analytics, not a trained clustering model, but a genuine demonstration of turning generated orders into a business-relevant view.
 
+A **"Compare scenarios side by side"** panel (`GET /api/compare?scenarioA=&scenarioB=`) runs two scenario presets at the same scale and charts their abandonment/delayed-shipment/return-rate percentages next to each other, with average order value shown as two separate stat badges (dollar figures and percentages don't share a sensible axis, so they're not forced onto the same bar chart). The CLI's `diff` command covers the same underlying need in text form; this is the visual, exploratory version.
+
 ```
 web/
   server.mjs        Express API: GET /api/generate?scaleFactor=&abandonmentRate=&...
-                              and GET /api/rfm?scaleFactor=&... (cohort segmentation)
-  public/index.html sliders + Chart.js, fetches both endpoints and re-renders
+                              GET /api/rfm?scaleFactor=&... (cohort segmentation)
+                              GET /api/compare?scenarioA=&scenarioB=&scaleFactor=&... (side-by-side)
+                              GET /api/scenarios (list of preset names, for the dropdowns)
+  public/index.html sliders + Chart.js, fetches all endpoints and re-renders
 ```
+
+## Static browser demo (no server, deployable to GitHub Pages)
+
+The same generator, bundled with esbuild, running entirely client-side -- click a link, no install:
+
+```bash
+npm run build:static
+# open web-static/index.html directly, or serve the folder with any static host
+```
+
+This works because `src/config.ts` loads its validation schema from a plain TS object (`src/config-schema-object.ts`) instead of reading a JSON file off disk with `node:fs` -- that's what makes the whole generation pipeline (`generate`, `generateRecords`, `generateStores`, scenarios, even the webhook event builder) bundleable for the browser. `src/browser.ts` is the curated entrypoint for this: everything except `serve.ts` (needs Express/Node's HTTP server) and `diff.ts` (reads files via `node:fs`), which don't make sense client-side anyway.
+
+```
+web-static/
+  index.html         same dashboard UI, but calls generate() directly in-browser
+  src/app.ts          imports from ../../src/browser.js, no fetch() calls at all
+  dist/bundle.js      esbuild output (platform: browser, ~970kb, includes faker-js + ajv)
+```
+
+`.github/workflows/pages.yml` builds and deploys this to GitHub Pages on every push to `main` that touches `web-static/` or `src/`.
 
 ## Anomaly injection (rare, high-value edge cases)
 
@@ -236,11 +366,15 @@ Edit `docker-compose.yml`'s `seed.command` to change the scenario, user count, o
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push, PR, and nightly (`workflow_dispatch` also available):
+`.github/workflows/ci.yml` runs on every push, PR, and nightly (`workflow_dispatch` also available), across three jobs:
 
-- **Typecheck + unit tests + build** on Node 18.x and 20.x
-- **`npm run smoke-test`** -- generates a dataset with every scenario preset against the compiled `dist/` and asserts relational/financial invariants, independent of the vitest suite (catches "the build still runs and produces a sane shape" regressions from dependency bumps)
-- **CLI end-to-end** -- generate in all three formats, snapshot+replay byte-identical diff, `--stream` produces valid NDJSON, every scenario preset runs
+- **`test`** -- typecheck + unit tests + build on Node 18.x and 20.x, `npm run smoke-test` (every scenario preset against compiled `dist/`, asserting relational/financial invariants independent of the vitest suite), and a static-bundle check (`npm run build:static` + `scripts/smoke-test-static.cjs` against a fake DOM)
+- **`cli-e2e`** -- generate in all three formats, snapshot+replay byte-identical diff, `--stream` produces valid NDJSON, every scenario preset runs, `diff` reports zero drift comparing a run to itself, `--stores` generates N independent stores
+- **`mock-api-e2e`** -- `serve` answers on `/`, `/api/orders`, and `/openapi.json`; `--chaos --chaos-error-rate 1` reliably returns `500`; `--api-key` rejects unauthenticated requests and accepts the correct key; `/openapi.json`'s `$ref` pointers all resolve; `webhook --dry-run` produces a valid chronological event list
+
+`.github/workflows/pages.yml` is a separate, focused workflow that builds and deploys `web-static/` to GitHub Pages whenever `main` changes anything under `web-static/` or `src/`.
+
+**Honest status:** every command in both workflows has been dry-run locally against this exact repo state and passes -- but neither workflow has executed on GitHub's own runners yet, since that requires an actual push to `Hung1510/Eco-Faker`. The CI badge at the top of this README will go green (or red) the first time `main` is pushed to; until then, treat it as "should pass" rather than "has passed."
 
 ## Publishing to npm
 
@@ -252,6 +386,8 @@ npm publish --access public
 ```
 
 After that, anyone can run `npx eco-faker` -- wait, the bin is `my-eco-gen`, so: `npx --package eco-faker my-eco-gen generate --users 50 --format sql --output ./seed.sql`, or `npm install -g eco-faker` for a plain `my-eco-gen` on `$PATH`.
+
+**This step hasn't happened yet either** -- it needs your npm account and can't be done from here. Once published, consider adding an npm-version badge next to the CI badge above.
 
 ---
 
@@ -314,51 +450,69 @@ Config is validated against `config.schema.json` via [ajv](https://ajv.js.org/) 
 
 ```
 src/
-  rng.ts             seeded PRNG (mulberry32) — every probabilistic decision runs through this
-  config.ts           defaults, merging (mergeOverrides), ajv schema validation
-  scenarios.ts         named business-scenario config presets (black-friday, etc.)
-  types.ts             shared TypeScript types
-  generator.ts        orchestrates the full pipeline (generate() and the streaming generateRecords())
+  rng.ts                seeded PRNG (mulberry32) — every probabilistic decision runs through this
+  config.ts              defaults, merging (mergeOverrides), ajv schema validation
+  config-schema-object.ts  the schema as a plain TS object (no node:fs), mirrors config.schema.json
+  scenarios.ts            named business-scenario config presets (black-friday, etc.)
+  types.ts                shared TypeScript types
+  generator.ts            orchestrates the full pipeline (generate() and the streaming generateRecords())
+  multi-store.ts           generateStores(): N independently-seeded stores in one call
+  serve.ts                 mock REST API (json-server style): chaos mode, API-key auth, /openapi.json
+  openapi.ts                hand-written OpenAPI 3.0 spec builder for the mock API
+  live.ts                   WebSocket /live feed, broadcasts webhook-shaped events at an interval
+  webhook.ts                webhook event builder + paced replay, browser-safe
+  diff.ts                   dataset/snapshot structural diffing, reads files via node:fs
+  index.ts                  full public API (Node)
+  browser.ts                 browser-safe subset of the public API (excludes serve.ts and diff.ts)
   modules/
-    user/              users + addresses
-    cart/               carts, line items, abandoned checkouts
-    order/              cart → order conversion, financial math
-    tracking/           shipments, tracking event timelines, delays
-    return/              return request eligibility + generation
-    anomaly/             bot carts, remote-shipping surcharges, contradictory reviews
+    user/                  users + addresses
+    cart/                   carts, line items, abandoned checkouts
+    order/                  cart → order conversion, financial math, formatted currency
+    tracking/               shipments, tracking event timelines, delays
+    return/                  return request eligibility + generation
+    anomaly/                 bot carts, remote-shipping surcharges, contradictory reviews
   introspect/
-    prisma.ts            lightweight .prisma schema parser
-    drizzle.ts            lightweight Drizzle (pgTable/mysqlTable/sqliteTable) parser
-    sqlalchemy.ts          lightweight SQLAlchemy declarative-model parser
-    mapper.ts             fuzzy canonical-column -> schema-column matcher (shared by all three)
+    prisma.ts                lightweight .prisma schema parser
+    drizzle.ts                lightweight Drizzle (pgTable/mysqlTable/sqliteTable) parser
+    sqlalchemy.ts              lightweight SQLAlchemy declarative-model parser
+    mapper.ts                 fuzzy canonical-column -> schema-column matcher (shared by all three)
   output/
     json.ts / sql.ts / csv.ts   (sql.ts and csv.ts accept an optional SchemaMapping)
-  cli.ts               `my-eco-gen` entrypoint (generate / replay / init / scenarios)
+  cli.ts                   `my-eco-gen` entrypoint (generate / serve / webhook / diff / replay / init / scenarios)
 web/
-  server.mjs           Express API for the interactive playground (+ /api/rfm)
-  public/index.html    sliders + Chart.js frontend, incl. RFM panel
+  server.mjs               Express API for the interactive playground (+ /api/rfm, /api/compare, /api/scenarios)
+  public/index.html        sliders + Chart.js frontend: RFM panel + side-by-side scenario comparison
+web-static/
+  index.html               static demo UI, no server
+  src/app.ts                imports src/browser.ts directly, calls generate() client-side
+  dist/bundle.js            esbuild output (git-ignored, built by `npm run build:static`)
 scripts/
-  smoke-test.mjs       CI structural smoke test against compiled dist/
+  smoke-test.mjs           CI structural smoke test against compiled dist/
+  smoke-test-static.cjs     runs the static bundle against a fake DOM to catch bundling regressions
 tests/
   relational-integrity.test.ts
   timeline.test.ts
   financial-and-determinism.test.ts
   anomaly.test.ts
   scenarios.test.ts
+  serve-webhook-diff.test.ts
+  chaos-auth-openapi-live.test.ts
 .github/workflows/
-  ci.yml               typecheck/test/build/smoke-test/CLI e2e on push, PR, and nightly
-Dockerfile             multi-stage build: compile -> slim runtime with psql baked in
-docker-compose.yml     postgres + one-shot seed service
+  ci.yml                   3 jobs: typecheck/build/test/smoke-tests, CLI e2e, mock-API e2e (chaos/auth/openapi)
+  pages.yml                 builds + deploys web-static/ to GitHub Pages on push to main
+Dockerfile                 multi-stage build: compile -> slim runtime with psql baked in
+docker-compose.yml         postgres + one-shot seed service
 ```
 
 ## Testing
 
 ```bash
-npm test              # vitest unit suite
-npm run smoke-test    # structural smoke test against compiled dist/ (run after npm run build)
+npm test                    # vitest unit suite
+npm run smoke-test          # structural smoke test against compiled dist/ (run after npm run build)
+npm run build:static && node scripts/smoke-test-static.cjs   # static bundle, fake-DOM check
 ```
 
-36 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), and scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug caught during development where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it).
+61 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it), the mock REST API server (filtering, sorting, pagination, 404s), chaos mode (forced error/rate-limit rates actually produce the expected status codes, and chaos never touches `/` or `/openapi.json`), API-key auth (rejects missing/wrong keys, accepts the right one, never gates the docs routes), the OpenAPI spec (every resource has list+item paths, every `$ref` resolves to a real schema), the live WebSocket feed (chronologically-shaped events broadcast to a real connected client), the webhook simulator (chronological ordering, event-type filtering, granular shipment lifecycle events), dataset diffing (including a regression test for a real false-positive bug where an empty table was flagged as "schema drift" just because it happened to sample zero rows), multi-store determinism, and locale-aware currency formatting (including on anomaly-adjusted totals).
 
 ## Performance
 

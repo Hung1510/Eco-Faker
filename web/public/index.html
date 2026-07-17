@@ -134,6 +134,24 @@
         <div class="chart-title">Top 10 customers by spend</div>
         <table id="rfmTable" style="width:100%; font-size:12px; border-collapse:collapse;"></table>
       </div>
+      <div class="panel wide">
+        <div class="chart-title">Compare scenarios side by side</div>
+        <div style="display:flex; gap:16px; align-items:end; margin-bottom:14px; flex-wrap:wrap;">
+          <div>
+            <label style="display:block; font-size:12px; color:var(--muted); margin-bottom:4px;">Scenario A</label>
+            <select id="scenarioA" style="background:#0f1115; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 8px;"></select>
+          </div>
+          <div>
+            <label style="display:block; font-size:12px; color:var(--muted); margin-bottom:4px;">Scenario B</label>
+            <select id="scenarioB" style="background:#0f1115; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 8px;"></select>
+          </div>
+          <button id="compareBtn" style="background:var(--accent); color:#0f1115; border:none; border-radius:6px; padding:7px 16px; font-weight:600; cursor:pointer;">Compare</button>
+        </div>
+        <div style="display:grid; grid-template-columns: 2fr 1fr; gap:16px;">
+          <canvas id="compareChart" style="max-height:220px;"></canvas>
+          <div id="compareAvgOrderValue" style="display:flex; flex-direction:column; gap:10px; justify-content:center;"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -265,6 +283,67 @@
     }
 
     refresh();
+
+    // --- Scenario comparison panel ---
+    let compareChart;
+    const scenarioASelect = document.getElementById("scenarioA");
+    const scenarioBSelect = document.getElementById("scenarioB");
+
+    fetch("/api/scenarios")
+      .then((r) => r.json())
+      .then((scenarios) => {
+        for (const select of [scenarioASelect, scenarioBSelect]) {
+          for (const name of scenarios) {
+            const opt = document.createElement("option");
+            opt.value = name;
+            opt.textContent = name;
+            select.appendChild(opt);
+          }
+        }
+        scenarioBSelect.selectedIndex = Math.min(1, scenarioBSelect.options.length - 1);
+        runComparison();
+      });
+
+    async function runComparison() {
+      const params = new URLSearchParams({
+        scenarioA: scenarioASelect.value,
+        scenarioB: scenarioBSelect.value,
+        scaleFactor: els.scaleFactor.value,
+      });
+      const res = await fetch("/api/compare?" + params.toString());
+      const { a, b } = await res.json();
+
+      const labels = ["Abandonment %", "Delayed shipments %", "Return rate %"];
+      const dataA = [a.abandonmentRatePct, a.delayedShipmentPct, a.returnRatePct];
+      const dataB = [b.abandonmentRatePct, b.delayedShipmentPct, b.returnRatePct];
+
+      const chartData = {
+        labels,
+        datasets: [
+          { label: a.scenario, data: dataA, backgroundColor: "#6ee7b7" },
+          { label: b.scenario, data: dataB, backgroundColor: "#60a5fa" },
+        ],
+      };
+
+      if (compareChart) {
+        compareChart.data = chartData;
+        compareChart.update();
+      } else {
+        const ctx = document.getElementById("compareChart").getContext("2d");
+        compareChart = new Chart(ctx, {
+          type: "bar",
+          data: chartData,
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "top" } } },
+        });
+      }
+
+      document.getElementById("compareAvgOrderValue").innerHTML = `
+        <div class="stat"><div class="n">$${a.avgOrderValue}</div><div class="l">${a.scenario} avg order</div></div>
+        <div class="stat"><div class="n">$${b.avgOrderValue}</div><div class="l">${b.scenario} avg order</div></div>
+      `;
+    }
+
+    document.getElementById("compareBtn").addEventListener("click", runComparison);
   </script>
 </body>
 </html>

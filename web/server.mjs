@@ -2,6 +2,8 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generate } from "../dist/generator.js";
+import { SCENARIOS, resolveScenario } from "../dist/scenarios.js";
+import { mergeOverrides } from "../dist/config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -179,6 +181,44 @@ app.get("/api/rfm", (req, res) => {
   const referenceNow = todayReferenceNow();
   const dataset = generate(overrides, referenceNow);
   res.json(computeRfm(dataset, referenceNow));
+});
+
+function keyMetrics(dataset) {
+  const cartCount = dataset.carts.length || 1;
+  const abandonedCount = dataset.carts.filter((c) => c.status === "abandoned").length;
+  const shipmentCount = dataset.shipments.length || 1;
+  const delayedCount = dataset.shipments.filter((s) => s.delayed).length;
+  const deliveredOrders = dataset.orders.filter((o) => o.status === "delivered").length || 1;
+  const avgOrderValue = dataset.orders.length > 0 ? dataset.orders.reduce((sum, o) => sum + o.total, 0) / dataset.orders.length : 0;
+
+  return {
+    abandonmentRatePct: Math.round((abandonedCount / cartCount) * 1000) / 10,
+    delayedShipmentPct: Math.round((delayedCount / shipmentCount) * 1000) / 10,
+    avgOrderValue: Math.round(avgOrderValue * 100) / 100,
+    returnRatePct: Math.round((dataset.returnRequests.length / deliveredOrders) * 1000) / 10,
+  };
+}
+
+app.get("/api/scenarios", (_req, res) => {
+  res.json(Object.keys(SCENARIOS));
+});
+
+app.get("/api/compare", (req, res) => {
+  const scaleFactor = num(req.query.scaleFactor, 150);
+  const referenceNow = todayReferenceNow();
+
+  function buildSide(scenarioName) {
+    const scenarioOverrides = scenarioName ? resolveScenario(scenarioName) : {};
+    const overrides = mergeOverrides(scenarioOverrides, { scaleFactor, seed: 42 });
+    const dataset = generate(overrides, referenceNow);
+    return {
+      scenario: scenarioName || "custom",
+      ...keyMetrics(dataset),
+      counts: { orders: dataset.orders.length, carts: dataset.carts.length },
+    };
+  }
+
+  res.json({ a: buildSide(req.query.scenarioA), b: buildSide(req.query.scenarioB) });
 });
 
 app.listen(PORT, () => {
