@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>eco-faker playground</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --accent: #6ee7b7;
+    --accent2: #f59e0b;
+    --danger: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 24px 32px 8px;
+  }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  .layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 20px;
+    padding: 20px 32px 40px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .controls label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin: 16px 0 4px;
+  }
+  .controls .value { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .controls input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+  }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-top: 18px;
+  }
+  .stat {
+    background: #0f1115;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .stat .n { font-size: 20px; font-weight: 600; }
+  .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .charts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .charts .panel.wide { grid-column: 1 / -1; }
+  .chart-title { font-size: 13px; color: var(--muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  canvas { max-height: 260px; }
+  .anomaly-badges { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .badge {
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--accent2);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+  }
+  .elapsed { color: var(--muted); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>eco-faker &mdash; interactive playground</h1>
+    <p>Adjust the sliders and watch users, carts, shipments, and anomalies regenerate in real time.</p>
+  </header>
+
+  <div class="layout">
+    <div class="panel controls">
+      <label>Users (scaleFactor): <span class="value" id="val-scaleFactor">150</span></label>
+      <input type="range" id="scaleFactor" min="10" max="1000" step="10" value="150" />
+
+      <label>Abandonment rate: <span class="value" id="val-abandonmentRate">0.35</span></label>
+      <input type="range" id="abandonmentRate" min="0" max="1" step="0.01" value="0.35" />
+
+      <label>Delay probability: <span class="value" id="val-delayProbability">0.15</span></label>
+      <input type="range" id="delayProbability" min="0" max="1" step="0.01" value="0.15" />
+
+      <label>Return rate: <span class="value" id="val-returnRate">0.08</span></label>
+      <input type="range" id="returnRate" min="0" max="1" step="0.01" value="0.08" />
+
+      <label>Multi-package rate: <span class="value" id="val-multiPackageRate">0.10</span></label>
+      <input type="range" id="multiPackageRate" min="0" max="1" step="0.01" value="0.1" />
+
+      <div class="stats" id="stats"></div>
+      <div class="anomaly-badges" id="anomalies"></div>
+      <div class="elapsed" id="elapsed"></div>
+    </div>
+
+    <div class="charts">
+      <div class="panel">
+        <div class="chart-title">Cart status breakdown</div>
+        <canvas id="cartChart"></canvas>
+      </div>
+      <div class="panel">
+        <div class="chart-title">Shipment status (delayed highlighted)</div>
+        <canvas id="shipmentChart"></canvas>
+      </div>
+      <div class="panel wide">
+        <div class="chart-title">Revenue by day</div>
+        <canvas id="revenueChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const sliders = ["scaleFactor", "abandonmentRate", "delayProbability", "returnRate", "multiPackageRate"];
+    const els = Object.fromEntries(sliders.map((id) => [id, document.getElementById(id)]));
+    const valueEls = Object.fromEntries(sliders.map((id) => [id, document.getElementById("val-" + id)]));
+
+    let cartChart, shipmentChart, revenueChart;
+    let debounceHandle = null;
+
+    function currentParams() {
+      const params = new URLSearchParams();
+      for (const id of sliders) params.set(id, els[id].value);
+      return params;
+    }
+
+    function paintSliderValues() {
+      for (const id of sliders) valueEls[id].textContent = Number(els[id].value).toFixed(id === "scaleFactor" ? 0 : 2);
+    }
+
+    async function refresh() {
+      paintSliderValues();
+      const res = await fetch("/api/generate?" + currentParams().toString());
+      const data = await res.json();
+      renderStats(data);
+      renderCharts(data);
+    }
+
+    function renderStats(data) {
+      const c = data.counts;
+      document.getElementById("stats").innerHTML = [
+        ["Users", c.users],
+        ["Carts", c.carts],
+        ["Abandoned", c.abandonedCheckouts],
+        ["Orders", c.orders],
+        ["Shipments", c.shipments],
+        ["Returns", c.returnRequests],
+      ]
+        .map(([label, n]) => `<div class="stat"><div class="n">${n}</div><div class="l">${label}</div></div>`)
+        .join("");
+
+      document.getElementById("anomalies").innerHTML = [
+        `${data.anomalyCounts.botCarts} bot carts`,
+        `${data.anomalyCounts.remoteShippingOrders} remote-shipping surcharges`,
+        `${data.anomalyCounts.contradictoryReturns} contradictory returns`,
+      ]
+        .map((t) => `<span class="badge">${t}</span>`)
+        .join("");
+
+      document.getElementById("elapsed").textContent = `Generated in ${data.elapsedMs}ms`;
+    }
+
+    function renderCharts(data) {
+      const palette = ["#6ee7b7", "#f59e0b", "#f87171", "#60a5fa", "#c084fc"];
+
+      const cartLabels = Object.keys(data.cartStatusBreakdown);
+      const cartValues = Object.values(data.cartStatusBreakdown);
+      cartChart = upsertChart(cartChart, "cartChart", "pie", {
+        labels: cartLabels,
+        datasets: [{ data: cartValues, backgroundColor: palette }],
+      });
+
+      const shipmentLabels = Object.keys(data.shipmentStatusBreakdown);
+      const shipmentValues = Object.values(data.shipmentStatusBreakdown);
+      shipmentChart = upsertChart(shipmentChart, "shipmentChart", "bar", {
+        labels: shipmentLabels,
+        datasets: [
+          {
+            label: "Shipments",
+            data: shipmentValues,
+            backgroundColor: shipmentLabels.map((l) => (l === "Delayed" ? "#f87171" : "#6ee7b7")),
+          },
+        ],
+      }, { plugins: { legend: { display: false } } });
+
+      revenueChart = upsertChart(revenueChart, "revenueChart", "bar", {
+        labels: data.revenueSeries.map((d) => d.date),
+        datasets: [{ label: "Revenue ($)", data: data.revenueSeries.map((d) => d.revenue), backgroundColor: "#60a5fa" }],
+      }, { plugins: { legend: { display: false } } });
+    }
+
+    function upsertChart(existing, canvasId, type, chartData, extraOptions = {}) {
+      if (existing) {
+        existing.data = chartData;
+        existing.update();
+        return existing;
+      }
+      const ctx = document.getElementById(canvasId).getContext("2d");
+      return new Chart(ctx, {
+        type,
+        data: chartData,
+        options: { responsive: true, maintainAspectRatio: false, ...extraOptions },
+      });
+    }
+
+    for (const id of sliders) {
+      els[id].addEventListener("input", () => {
+        paintSliderValues();
+        clearTimeout(debounceHandle);
+        debounceHandle = setTimeout(refresh, 150);
+      });
+    }
+
+    refresh();
+  </script>
+</body>
+</html>
