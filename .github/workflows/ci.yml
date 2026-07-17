@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly at 03:17 UTC -- catches silent breakage from dependency
+    # updates (faker, ajv, commander) even without a code change.
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    name: Typecheck, build, and test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test (dist/, every scenario preset)
+        run: npm run smoke-test
+
+  cli-e2e:
+    name: CLI end-to-end (generate, replay, stream, init)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+
+      - name: generate (json/sql/csv)
+        run: |
+          node dist/cli.js generate --users 20 --seed 1 --format json --output /tmp/eco.json
+          node dist/cli.js generate --users 20 --seed 1 --format sql --output /tmp/eco.sql
+          node dist/cli.js generate --users 20 --seed 1 --format csv --output /tmp/eco.csv
+
+      - name: snapshot + replay are byte-identical
+        run: |
+          node dist/cli.js generate --users 20 --seed 7 --format json --output /tmp/run1.json --snapshot /tmp/run1.snapshot.json
+          node dist/cli.js replay --input /tmp/run1.snapshot.json --format json --output /tmp/run1-replay.json
+          diff /tmp/run1.json /tmp/run1-replay.json
+
+      - name: stream mode produces valid NDJSON
+        run: |
+          node dist/cli.js generate --users 10 --seed 3 --stream > /tmp/eco.ndjson
+          node -e "require('fs').readFileSync('/tmp/eco.ndjson','utf8').trim().split('\n').forEach(l => JSON.parse(l))"
+
+      - name: scenario presets all run
+        run: |
+          for s in black-friday post-holiday-returns flash-sale supply-chain-crisis steady-state; do
+            node dist/cli.js generate --scenario "$s" --users 20 --format json --output /tmp/"$s".json
+          done

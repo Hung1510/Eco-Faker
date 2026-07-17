@@ -1,9 +1,18 @@
 # eco-faker
 
+[![CI](https://github.com/Hung1510/Eco-Faker/actions/workflows/ci.yml/badge.svg)](https://github.com/Hung1510/Eco-Faker/actions/workflows/ci.yml)
+
 Stateful, relationally-consistent fake-data generator for e-commerce apps. Not just a pile of random JSON — every `Cart`, `Order`, `Shipment`, and `ReturnRequest` is derived from the same underlying state machine, so the dataset reads like a real store's history instead of unrelated fixtures.
 
 ```
 Users → Carts → (AbandonedCheckouts | Orders → Shipments → ReturnRequests)
+```
+
+**Try it in 30 seconds, no Node install required:**
+
+```bash
+docker compose up --build
+# Postgres @ localhost:5432 (eco/eco/eco_faker) seeded with a Black Friday dataset
 ```
 
 ## Features
@@ -13,12 +22,15 @@ Users → Carts → (AbandonedCheckouts | Orders → Shipments → ReturnRequest
 - **Orders** — financially exact (`subtotal + tax + shipping === total`), free-shipping threshold, missing-address edge case
 - **Shipment tracking** — realistic multi-stage event histories (`Label Created → Picked Up → In Transit → [Delayed] → Out for Delivery → Delivered`), multi-package orders
 - **Return requests** — only for delivered orders, weighted approve/reject/pending, partial or full refunds
+- **Scenario presets** — `--scenario black-friday` swaps in a whole tuned config bundle for a recognizable business situation
 - **Anomaly injection** — rare, high-value edge cases that stress-test downstream systems (see below)
 - **Deterministic** — same seed + same reference time → byte-identical dataset; snapshot/replay for exact reproducibility
 - **Three output formats** — JSON, SQL (Postgres-flavored `CREATE TABLE` + `INSERT`), CSV
-- **Schema-aware output** — point it at an existing Prisma schema and it maps its own columns onto yours
+- **Schema-aware output** — point it at an existing Prisma, Drizzle, or SQLAlchemy schema and it maps its own columns onto yours
 - **High-volume streaming** — NDJSON straight to stdout, no dataset ever held fully in memory
-- **Interactive web playground** — sliders + live charts, backed by a small Express API
+- **Interactive web playground** — sliders + live charts + RFM/cohort segmentation, backed by a small Express API
+- **One-command Postgres demo** — `docker compose up` generates a scenario and seeds a real database
+- **CI-tested** — GitHub Actions runs typecheck/tests/build/smoke-test/CLI e2e on every push, PR, and nightly
 - **CLI** — `my-eco-gen generate --users 50 --format sql --output ./seed.sql`
 
 ## Install
@@ -59,6 +71,35 @@ Run `my-eco-gen generate --help` for the full flag list. Every flag maps 1:1 to 
 
 ---
 
+## Scenario presets
+
+Instead of hand-tuning a dozen rates, apply a named business scenario -- a whole pre-tuned config bundle:
+
+```bash
+my-eco-gen scenarios   # list all presets with their key values
+
+my-eco-gen generate --scenario black-friday --format sql --output ./black-friday.sql
+my-eco-gen generate --scenario post-holiday-returns --format json --output ./returns.json
+```
+
+| Scenario | Story | Key tuning |
+|---|---|---|
+| `black-friday` | Traffic spike, overwhelmed checkout | high `scaleFactor` + `abandonmentRate`, low `delayProbability` (logistics hasn't caught up yet) |
+| `post-holiday-returns` | Weeks after peak season | high `returnRate` + `delayProbability` (carrier backlog), low new-cart activity |
+| `flash-sale` | Short, intense burst | very high `abandonmentRate` (stock races out before checkout), tiny `historicalDays` window |
+| `supply-chain-crisis` | Logistics network under strain | high `delayProbability` + `maxDelayDays` + `multiPackageRate` (partial fulfillment) |
+| `steady-state` | Ordinary day-to-day traffic | close to `DEFAULT_CONFIG`, named for symmetry |
+
+Explicit flags still win over the scenario -- `--scenario black-friday --users 50` uses Black Friday's abandonment/delay/coupon tuning but only 50 users, not the preset's 2,000. This is the same precedence a snapshot records, so `--scenario X --snapshot ./run.json` captures the fully-resolved recipe, scenario included.
+
+Programmatically:
+
+```ts
+import { generate, SCENARIOS, resolveScenario, mergeOverrides } from "eco-faker";
+
+const dataset = generate(mergeOverrides(resolveScenario("black-friday"), { scaleFactor: 500 }));
+```
+
 ## Interactive visual playground
 
 A small full-stack demo: an Express API wrapping the real `generate()` call, and a vanilla-JS + Chart.js frontend with live sliders.
@@ -69,12 +110,15 @@ npm run web
 # open http://localhost:4173
 ```
 
-Adjust **Abandonment rate** or **Delay probability** and the cart-status pie chart, shipment-status bar chart (with `Delayed` highlighted), and revenue-by-day chart all regenerate in real time from the same generator that powers the CLI — same code, same guarantees, just visualized.
+Adjust **Abandonment rate** or **Delay probability** and the cart-status pie chart, shipment-status bar chart (with `Delayed` highlighted), revenue-by-day chart, and a **customer-segment (RFM) doughnut chart + top-10-spenders table** all regenerate in real time from the same generator that powers the CLI — same code, same guarantees, just visualized.
+
+The RFM panel (`GET /api/rfm`) buckets customers into Recency/Frequency/Monetary quartiles and labels them with simple rule-based segments (Champions, Loyal, Big Spenders, At Risk, New/One-time, Hibernating) -- illustrative cohort analytics, not a trained clustering model, but a genuine demonstration of turning generated orders into a business-relevant view.
 
 ```
 web/
   server.mjs        Express API: GET /api/generate?scaleFactor=&abandonmentRate=&...
-  public/index.html sliders + Chart.js, fetches /api/generate and re-renders
+                              and GET /api/rfm?scaleFactor=&... (cohort segmentation)
+  public/index.html sliders + Chart.js, fetches both endpoints and re-renders
 ```
 
 ## Anomaly injection (rare, high-value edge cases)
@@ -96,14 +140,16 @@ my-eco-gen generate --users 500 --no-anomalies   # disable entirely
 
 ## Schema introspection & auto-mapping
 
-Point `my-eco-gen` at an existing Prisma schema and it maps its own canonical columns onto yours -- no manual `faker.name() -> user_full_nm` mapping by hand.
+Point `my-eco-gen` at an existing **Prisma, Drizzle, or SQLAlchemy** schema and it maps its own canonical columns onto yours -- no manual `faker.name() -> user_full_nm` mapping by hand. The schema type is auto-detected from the file extension (`.prisma`, `.ts`/`.js`, `.py`) or set explicitly with `--schema-type`.
 
 ```bash
-my-eco-gen init --schema ./prisma/schema.prisma --output ./mapping.json
+my-eco-gen init --schema ./prisma/schema.prisma --output ./mapping.json          # Prisma
+my-eco-gen init --schema ./db/schema.ts --schema-type drizzle -o ./mapping.json # Drizzle
+my-eco-gen init --schema ./models.py --schema-type sqlalchemy -o ./mapping.json # SQLAlchemy
 ```
 
 ```
-Parsed 2 model(s) from ./prisma/schema.prisma.
+Parsed 2 model(s) from ./prisma/schema.prisma (prisma).
   users -> User: 6/7 columns confidently mapped
   orders -> CustomerOrder: 12/12 columns confidently mapped
   carts: no matching model found -- left unmapped (canonical names kept).
@@ -132,7 +178,7 @@ Then generate SQL/CSV targeting your real table and column names (no `CREATE TAB
 my-eco-gen generate --users 200 --format sql --mapping ./mapping.json --output ./seed.sql
 ```
 
-This is a lightweight, regex-based Prisma parser and token-overlap fuzzy matcher -- not a full AST/type-checker. It's meant to get you 80% of the way and surface confidence scores for the rest, not to be a silent black box.
+This is a lightweight, regex-based parser (one per schema dialect) and a token-overlap fuzzy matcher -- not a full AST/type-checker for any of the three ecosystems. It's meant to get you 80% of the way and surface confidence scores for the rest, not to be a silent black box.
 
 ## High-volume stream mode
 
@@ -169,6 +215,43 @@ diff ./run1.json ./replay.json   # byte-identical, guaranteed
 ```
 
 `bug-42.snapshot.json` is a few lines of JSON (`seed`, resolved config overrides, `referenceNow`) -- lightweight enough to commit alongside a failing test case, so "user 42's cart abandoned at exactly 2:31pm" becomes a one-line fixture instead of a multi-megabyte data dump.
+
+---
+
+## Docker: seed a real Postgres database in one command
+
+```bash
+docker compose up --build
+```
+
+This brings up two services:
+- `postgres` -- a real Postgres 16 instance (`localhost:5432`, db `eco_faker`, user/password `eco`/`eco`)
+- `seed` -- builds the CLI, generates a `black-friday` scenario as SQL, and loads it straight into Postgres via `psql`, then exits (an "exited with code 0" status for `seed` is expected and means it worked)
+
+```bash
+psql -h localhost -U eco -d eco_faker -c "select status, count(*) from orders group by status;"
+```
+
+Edit `docker-compose.yml`'s `seed.command` to change the scenario, user count, or format. `Dockerfile` is a standard multi-stage build (compile TypeScript, then a slim runtime image with `psql` baked in) -- no dependency on anything outside this repo.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push, PR, and nightly (`workflow_dispatch` also available):
+
+- **Typecheck + unit tests + build** on Node 18.x and 20.x
+- **`npm run smoke-test`** -- generates a dataset with every scenario preset against the compiled `dist/` and asserts relational/financial invariants, independent of the vitest suite (catches "the build still runs and produces a sane shape" regressions from dependency bumps)
+- **CLI end-to-end** -- generate in all three formats, snapshot+replay byte-identical diff, `--stream` produces valid NDJSON, every scenario preset runs
+
+## Publishing to npm
+
+The package is publish-ready (author, repository, keywords, `LICENSE`, `files` allowlist, `prepublishOnly` running build+test+smoke-test). To publish:
+
+```bash
+npm login
+npm publish --access public
+```
+
+After that, anyone can run `npx eco-faker` -- wait, the bin is `my-eco-gen`, so: `npx --package eco-faker my-eco-gen generate --users 50 --format sql --output ./seed.sql`, or `npm install -g eco-faker` for a plain `my-eco-gen` on `$PATH`.
 
 ---
 
@@ -232,7 +315,8 @@ Config is validated against `config.schema.json` via [ajv](https://ajv.js.org/) 
 ```
 src/
   rng.ts             seeded PRNG (mulberry32) — every probabilistic decision runs through this
-  config.ts           defaults, merging, ajv schema validation
+  config.ts           defaults, merging (mergeOverrides), ajv schema validation
+  scenarios.ts         named business-scenario config presets (black-friday, etc.)
   types.ts             shared TypeScript types
   generator.ts        orchestrates the full pipeline (generate() and the streaming generateRecords())
   modules/
@@ -244,27 +328,37 @@ src/
     anomaly/             bot carts, remote-shipping surcharges, contradictory reviews
   introspect/
     prisma.ts            lightweight .prisma schema parser
-    mapper.ts             fuzzy canonical-column -> schema-column matcher
+    drizzle.ts            lightweight Drizzle (pgTable/mysqlTable/sqliteTable) parser
+    sqlalchemy.ts          lightweight SQLAlchemy declarative-model parser
+    mapper.ts             fuzzy canonical-column -> schema-column matcher (shared by all three)
   output/
     json.ts / sql.ts / csv.ts   (sql.ts and csv.ts accept an optional SchemaMapping)
-  cli.ts               `my-eco-gen` entrypoint (generate / replay / init)
+  cli.ts               `my-eco-gen` entrypoint (generate / replay / init / scenarios)
 web/
-  server.mjs           Express API for the interactive playground
-  public/index.html    sliders + Chart.js frontend
+  server.mjs           Express API for the interactive playground (+ /api/rfm)
+  public/index.html    sliders + Chart.js frontend, incl. RFM panel
+scripts/
+  smoke-test.mjs       CI structural smoke test against compiled dist/
 tests/
   relational-integrity.test.ts
   timeline.test.ts
   financial-and-determinism.test.ts
   anomaly.test.ts
+  scenarios.test.ts
+.github/workflows/
+  ci.yml               typecheck/test/build/smoke-test/CLI e2e on push, PR, and nightly
+Dockerfile             multi-stage build: compile -> slim runtime with psql baked in
+docker-compose.yml     postgres + one-shot seed service
 ```
 
 ## Testing
 
 ```bash
-npm test
+npm test              # vitest unit suite
+npm run smoke-test    # structural smoke test against compiled dist/ (run after npm run build)
 ```
 
-29 tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), and anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, and the master `anomalies.enabled` switch).
+36 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), and scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug caught during development where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it).
 
 ## Performance
 

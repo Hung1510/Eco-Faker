@@ -5,7 +5,11 @@ import path from "node:path";
 import { generate, generateRecords } from "./generator.js";
 import { serialize, type OutputFormat } from "./output/index.js";
 import { parsePrismaSchema } from "./introspect/prisma.js";
+import { parseDrizzleSchema } from "./introspect/drizzle.js";
+import { parseSqlAlchemySchema } from "./introspect/sqlalchemy.js";
 import { buildSchemaMapping, type SchemaMapping } from "./introspect/mapper.js";
+import { mergeOverrides } from "./config.js";
+import { SCENARIOS, resolveScenario } from "./scenarios.js";
 import type { EcoFakerConfig, Locale } from "./types.js";
 
 const TOOL_VERSION = "0.1.0";
@@ -44,16 +48,35 @@ program
     "0..1 chance of a negative-reason return with a contradictory CSAT score",
     parseFloatArg
   )
+  .option(
+    "--scenario <name>",
+    `apply a named business-scenario preset (${Object.keys(SCENARIOS).join(" | ")}) before other flags`
+  )
   .option("--stream", "stream NDJSON records to stdout as they're produced, instead of writing a file")
   .option("--snapshot <path>", "also save the exact seed/config/referenceNow recipe to a .snapshot.json for later replay")
   .option("--mapping <path>", "apply a mapping.json (from `my-eco-gen init`) to target an existing DB schema's column names")
   .action(async (opts) => {
-    const overrides = buildOverridesFromGenerateOpts(opts);
+    const explicitOverrides = buildOverridesFromGenerateOpts(opts);
+    let scenarioOverrides: Partial<EcoFakerConfig> | undefined;
+    if (opts.scenario) {
+      try {
+        scenarioOverrides = resolveScenario(opts.scenario);
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exit(1);
+      }
+    }
+    const overrides = mergeOverrides(scenarioOverrides, explicitOverrides);
     const referenceNow = Date.now();
 
     if (opts.snapshot) {
       const snapshot: Snapshot = {
-        meta: { tool: "my-eco-gen", toolVersion: TOOL_VERSION, createdAt: new Date(referenceNow).toISOString() },
+        meta: {
+          tool: "my-eco-gen",
+          toolVersion: TOOL_VERSION,
+          createdAt: new Date(referenceNow).toISOString(),
+          description: opts.scenario ? `scenario: ${opts.scenario}` : undefined,
+        },
         referenceNow,
         config: overrides,
       };
@@ -139,18 +162,35 @@ program
 program
   .command("init")
   .description(
-    "Introspect an existing Prisma schema and auto-generate a mapping.json (canonical column -> your column names)."
+    "Introspect an existing schema (Prisma, Drizzle, or SQLAlchemy) and auto-generate a mapping.json (canonical column -> your column names)."
   )
-  .requiredOption("--schema <path>", "path to a .prisma schema file")
+  .requiredOption("--schema <path>", "path to a .prisma, Drizzle (.ts/.js), or SQLAlchemy (.py) schema file")
+  .option("--schema-type <type>", "prisma | drizzle | sqlalchemy (default: auto-detect from file extension)")
   .option("-o, --output <path>", "where to write the mapping file", "./mapping.json")
   .option("--tables <list>", "comma-separated subset of tables to map (default: all six)")
   .action((opts) => {
-    const schemaSource = readFileSync(path.resolve(process.cwd(), opts.schema), "utf-8");
-    const parsed = parsePrismaSchema(schemaSource);
-    const modelCount = Object.keys(parsed.models).length;
+    const schemaPath = path.resolve(process.cwd(), opts.schema);
+    const schemaSource = readFileSync(schemaPath, "utf-8");
+    const schemaType = opts.schemaType ?? detectSchemaType(schemaPath);
 
+    const parsed =
+      schemaType === "prisma"
+        ? parsePrismaSchema(schemaSource)
+        : schemaType === "drizzle"
+        ? parseDrizzleSchema(schemaSource)
+        : schemaType === "sqlalchemy"
+        ? parseSqlAlchemySchema(schemaSource)
+        : null;
+
+    if (!parsed) {
+      console.error(`Unrecognized --schema-type "${schemaType}". Use prisma, drizzle, or sqlalchemy.`);
+      process.exit(1);
+      return;
+    }
+
+    const modelCount = Object.keys(parsed.models).length;
     if (modelCount === 0) {
-      console.error(`No \`model\` blocks found in ${opts.schema} -- is this a valid .prisma file?`);
+      console.error(`No models/tables found in ${opts.schema} (parsed as ${schemaType}) -- is this a valid schema file?`);
       process.exit(1);
     }
 
@@ -161,7 +201,7 @@ program
     mkdirSync(path.dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, JSON.stringify(mapping, null, 2), "utf-8");
 
-    console.log(`Parsed ${modelCount} model(s) from ${opts.schema}.`);
+    console.log(`Parsed ${modelCount} model(s) from ${opts.schema} (${schemaType}).`);
     for (const [table, tableMapping] of Object.entries(mapping)) {
       if (!tableMapping.targetModel) {
         console.log(`  ${table}: no matching model found -- left unmapped (canonical names kept).`);
@@ -175,7 +215,27 @@ program
     console.log(`  my-eco-gen generate --mapping ${opts.output} --format sql --output ./seed.sql`);
   });
 
+program
+  .command("scenarios")
+  .description("List available --scenario presets and their key config values.")
+  .action(() => {
+    for (const [name, config] of Object.entries(SCENARIOS)) {
+      console.log(`${name}`);
+      for (const [key, value] of Object.entries(config)) {
+        console.log(`  ${key}: ${JSON.stringify(value)}`);
+      }
+      console.log("");
+    }
+  });
+
 program.parse();
+
+function detectSchemaType(schemaPath: string): "prisma" | "drizzle" | "sqlalchemy" | undefined {
+  if (schemaPath.endsWith(".prisma")) return "prisma";
+  if (schemaPath.endsWith(".py")) return "sqlalchemy";
+  if (schemaPath.endsWith(".ts") || schemaPath.endsWith(".js")) return "drizzle";
+  return undefined;
+}
 
 function buildOverridesFromGenerateOpts(opts: Record<string, unknown>): Partial<EcoFakerConfig> {
   const overrides: Partial<EcoFakerConfig> = {};

@@ -62,6 +62,32 @@ function getValidator() {
 }
 
 /**
+ * Combine multiple partial config overrides in precedence order (later
+ * arguments win), correctly deep-merging the nested `cartsPerUser`,
+ * `itemsPerCart`, and `anomalies` objects instead of letting a later
+ * partial's nested object silently clobber an earlier one's fields.
+ * Used to layer explicit CLI flags on top of a named scenario preset.
+ */
+export function mergeOverrides(...partials: Array<Partial<EcoFakerConfig> | undefined>): Partial<EcoFakerConfig> {
+  const result: Partial<EcoFakerConfig> = {};
+  for (const partial of partials) {
+    if (!partial) continue;
+    const priorCartsPerUser = result.cartsPerUser;
+    const priorItemsPerCart = result.itemsPerCart;
+    const priorAnomalies = result.anomalies;
+
+    Object.assign(result, partial);
+
+    if (partial.cartsPerUser) result.cartsPerUser = { ...priorCartsPerUser, ...partial.cartsPerUser };
+    if (partial.itemsPerCart) result.itemsPerCart = { ...priorItemsPerCart, ...partial.itemsPerCart };
+    if (partial.anomalies) {
+      result.anomalies = { ...priorAnomalies, ...partial.anomalies } as EcoFakerConfig["anomalies"];
+    }
+  }
+  return result;
+}
+
+/**
  * Merge a partial config over the defaults, then validate the *complete*
  * config against config.schema.json. Throws with all violations listed if
  * invalid, instead of failing on the first one.

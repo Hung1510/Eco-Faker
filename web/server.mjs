@@ -65,26 +65,120 @@ function summarize(dataset, elapsedMs) {
   };
 }
 
-app.get("/api/generate", (req, res) => {
-  const overrides = {
-    seed: num(req.query.seed, 42),
-    scaleFactor: num(req.query.scaleFactor, 150),
-    abandonmentRate: num(req.query.abandonmentRate, 0.35),
-    delayProbability: num(req.query.delayProbability, 0.15),
-    returnRate: num(req.query.returnRate, 0.08),
-    multiPackageRate: num(req.query.multiPackageRate, 0.1),
+function buildOverridesFromQuery(query) {
+  return {
+    seed: num(query.seed, 42),
+    scaleFactor: num(query.scaleFactor, 150),
+    abandonmentRate: num(query.abandonmentRate, 0.35),
+    delayProbability: num(query.delayProbability, 0.15),
+    returnRate: num(query.returnRate, 0.08),
+    multiPackageRate: num(query.multiPackageRate, 0.1),
   };
+}
 
-  // Pin the reference time to the top of today so repeated requests with the
-  // same sliders (same seed) produce a stable dataset within a browsing
-  // session, instead of drifting every millisecond like a live server would.
-  const referenceNow = new Date().setUTCHours(0, 0, 0, 0);
+// Pin the reference time to the top of today so repeated requests with the
+// same sliders (same seed) produce a stable dataset within a browsing
+// session, instead of drifting every millisecond like a live server would.
+function todayReferenceNow() {
+  return new Date().setUTCHours(0, 0, 0, 0);
+}
+
+app.get("/api/generate", (req, res) => {
+  const overrides = buildOverridesFromQuery(req.query);
+  const referenceNow = todayReferenceNow();
 
   const start = performance.now();
   const dataset = generate(overrides, referenceNow);
   const elapsedMs = performance.now() - start;
 
   res.json(summarize(dataset, elapsedMs));
+});
+
+const RFM_SEGMENTS = [
+  { name: "Champions", test: (r, f, m) => r >= 3 && f >= 3 && m >= 3 },
+  { name: "Loyal", test: (r, f, m) => f >= 3 && m >= 2 },
+  { name: "Big Spenders", test: (r, f, m) => m >= 3 },
+  { name: "At Risk", test: (r, f, m) => r <= 2 && (f >= 2 || m >= 2) },
+  { name: "New / One-time", test: (r, f) => f <= 1 },
+  { name: "Hibernating", test: () => true }, // fallback
+];
+
+function segmentFor(rScore, fScore, mScore) {
+  for (const segment of RFM_SEGMENTS) {
+    if (segment.test(rScore, fScore, mScore)) return segment.name;
+  }
+  return "Hibernating";
+}
+
+/** Split values into 4 quartile buckets, returning a scorer: value -> 1..4 (4 = best). */
+function quartileScorer(values, higherIsBetter) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const q = (p) => sorted[Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1)))];
+  const cuts = [q(0.25), q(0.5), q(0.75)];
+  return (value) => {
+    let bucket = 1;
+    if (value > cuts[0]) bucket = 2;
+    if (value > cuts[1]) bucket = 3;
+    if (value > cuts[2]) bucket = 4;
+    return higherIsBetter ? bucket : 5 - bucket;
+  };
+}
+
+/**
+ * Simple, illustrative RFM (Recency / Frequency / Monetary) segmentation --
+ * quartile scoring + rule-based labels, not a trained clustering model.
+ * Good enough to demonstrate cohort-style analytics on generated data;
+ * swap in a real model if you need production-grade segmentation.
+ */
+function computeRfm(dataset, referenceNow) {
+  const byUser = new Map();
+  for (const order of dataset.orders) {
+    const entry = byUser.get(order.userId) ?? { orders: 0, monetary: 0, lastOrderAt: 0 };
+    entry.orders += 1;
+    entry.monetary += order.total;
+    entry.lastOrderAt = Math.max(entry.lastOrderAt, new Date(order.createdAt).getTime());
+    byUser.set(order.userId, entry);
+  }
+
+  if (byUser.size === 0) return { segments: {}, topCustomers: [] };
+
+  const recencyDays = [...byUser.values()].map((e) => (referenceNow - e.lastOrderAt) / (1000 * 60 * 60 * 24));
+  const frequencies = [...byUser.values()].map((e) => e.orders);
+  const monetaryValues = [...byUser.values()].map((e) => e.monetary);
+
+  const scoreRecency = quartileScorer(recencyDays, false); // fewer days since last order = better
+  const scoreFrequency = quartileScorer(frequencies, true);
+  const scoreMonetary = quartileScorer(monetaryValues, true);
+
+  const usersById = new Map(dataset.users.map((u) => [u.id, u]));
+  const rows = [...byUser.entries()].map(([userId, e]) => {
+    const recency = (referenceNow - e.lastOrderAt) / (1000 * 60 * 60 * 24);
+    const rScore = scoreRecency(recency);
+    const fScore = scoreFrequency(e.orders);
+    const mScore = scoreMonetary(e.monetary);
+    return {
+      userId,
+      email: usersById.get(userId)?.email ?? "unknown",
+      recencyDays: Math.round(recency),
+      frequency: e.orders,
+      monetary: Math.round(e.monetary * 100) / 100,
+      segment: segmentFor(rScore, fScore, mScore),
+    };
+  });
+
+  const segments = {};
+  for (const row of rows) segments[row.segment] = (segments[row.segment] ?? 0) + 1;
+
+  const topCustomers = [...rows].sort((a, b) => b.monetary - a.monetary).slice(0, 10);
+
+  return { segments, topCustomers };
+}
+
+app.get("/api/rfm", (req, res) => {
+  const overrides = buildOverridesFromQuery(req.query);
+  const referenceNow = todayReferenceNow();
+  const dataset = generate(overrides, referenceNow);
+  res.json(computeRfm(dataset, referenceNow));
 });
 
 app.listen(PORT, () => {

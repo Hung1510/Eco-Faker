@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eco
+      POSTGRES_PASSWORD: eco
+      POSTGRES_DB: eco_faker
+    ports:
+      - "5432:5432"
+    volumes:
+      - eco_faker_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eco -d eco_faker"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: generate a scenario-driven SQL seed and load it straight into
+  # Postgres. Exits after seeding -- `docker compose up` will show it as
+  # "exited with code 0" once done, which is expected.
+  seed:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: eco
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        node dist/cli.js generate --users 300 --scenario black-friday --format sql --output /tmp/seed.sql &&
+        psql -h postgres -U eco -d eco_faker -f /tmp/seed.sql &&
+        echo "Seeded eco_faker @ localhost:5432 (user: eco / password: eco)."
+
+volumes:
+  eco_faker_pg_data:

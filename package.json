@@ -1,18 +1,44 @@
 {
   "name": "eco-faker",
   "version": "0.1.0",
-  "description": "Stateful, relationally-consistent fake data generator for e-commerce apps: carts, abandoned checkouts, orders, shipments, and returns.",
+  "description": "Stateful, relationally-consistent fake data generator for e-commerce apps: carts, abandoned checkouts, orders, shipments, returns, anomaly injection, and schema-aware SQL/CSV output.",
   "license": "MIT",
+  "author": "Hung1510",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
     "my-eco-gen": "./dist/cli.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hung1510/Eco-Faker.git"
+  },
+  "homepage": "https://github.com/Hung1510/Eco-Faker#readme",
+  "bugs": {
+    "url": "https://github.com/Hung1510/Eco-Faker/issues"
+  },
+  "keywords": [
+    "faker",
+    "fake-data",
+    "test-data",
+    "seed-data",
+    "e-commerce",
+    "mock-data",
+    "cli",
+    "sql",
+    "csv",
+    "prisma",
+    "drizzle",
+    "sqlalchemy",
+    "anomaly-detection",
+    "synthetic-data"
+  ],
   "files": [
     "dist",
     "config.schema.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -20,16 +46,17 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "web": "node web/server.mjs",
-    "prepublishOnly": "npm run build"
+    "smoke-test": "node scripts/smoke-test.mjs",
+    "prepublishOnly": "npm run build && npm test && npm run smoke-test"
   },
   "dependencies": {
     "@faker-js/faker": "^9.6.0",
     "ajv": "^8.17.1",
-    "commander": "^12.1.0",
-    "express": "^5.2.1"
+    "commander": "^12.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "express": "^5.2.1",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"

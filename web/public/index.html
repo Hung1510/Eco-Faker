@@ -126,6 +126,14 @@
         <div class="chart-title">Revenue by day</div>
         <canvas id="revenueChart"></canvas>
       </div>
+      <div class="panel">
+        <div class="chart-title">Customer segments (RFM)</div>
+        <canvas id="rfmChart"></canvas>
+      </div>
+      <div class="panel">
+        <div class="chart-title">Top 10 customers by spend</div>
+        <table id="rfmTable" style="width:100%; font-size:12px; border-collapse:collapse;"></table>
+      </div>
     </div>
   </div>
 
@@ -134,7 +142,7 @@
     const els = Object.fromEntries(sliders.map((id) => [id, document.getElementById(id)]));
     const valueEls = Object.fromEntries(sliders.map((id) => [id, document.getElementById("val-" + id)]));
 
-    let cartChart, shipmentChart, revenueChart;
+    let cartChart, shipmentChart, revenueChart, rfmChart;
     let debounceHandle = null;
 
     function currentParams() {
@@ -149,10 +157,36 @@
 
     async function refresh() {
       paintSliderValues();
-      const res = await fetch("/api/generate?" + currentParams().toString());
-      const data = await res.json();
+      const params = currentParams().toString();
+      const [genRes, rfmRes] = await Promise.all([
+        fetch("/api/generate?" + params),
+        fetch("/api/rfm?" + params),
+      ]);
+      const data = await genRes.json();
+      const rfm = await rfmRes.json();
       renderStats(data);
       renderCharts(data);
+      renderRfm(rfm);
+    }
+
+    function renderRfm(rfm) {
+      const labels = Object.keys(rfm.segments);
+      const values = Object.values(rfm.segments);
+      rfmChart = upsertChart(
+        rfmChart,
+        "rfmChart",
+        "doughnut",
+        { labels, datasets: [{ data: values, backgroundColor: ["#6ee7b7", "#60a5fa", "#f59e0b", "#f87171", "#c084fc", "#94a3b8"] }] }
+      );
+
+      const rows = rfm.topCustomers
+        .map(
+          (c) =>
+            `<tr><td style="padding:4px 6px;color:var(--muted)">${c.email}</td><td style="padding:4px 6px;text-align:right">$${c.monetary}</td><td style="padding:4px 6px;color:var(--accent)">${c.segment}</td></tr>`
+        )
+        .join("");
+      document.getElementById("rfmTable").innerHTML =
+        `<thead><tr><th style="text-align:left;padding:4px 6px;color:var(--muted)">Customer</th><th style="text-align:right;padding:4px 6px;color:var(--muted)">Spend</th><th style="text-align:left;padding:4px 6px;color:var(--muted)">Segment</th></tr></thead><tbody>${rows}</tbody>`;
     }
 
     function renderStats(data) {

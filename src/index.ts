@@ -1,5 +1,6 @@
 export { generate, generateRecords, type StreamRecord } from "./generator.js";
-export { resolveConfig, DEFAULT_CONFIG } from "./config.js";
+export { resolveConfig, DEFAULT_CONFIG, mergeOverrides } from "./config.js";
+export { SCENARIOS, resolveScenario, type ScenarioName } from "./scenarios.js";
 export { serialize } from "./output/index.js";
 export type { OutputFormat } from "./output/index.js";
 export { parsePrismaSchema, type ParsedSchema } from "./introspect/prisma.js";
