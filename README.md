@@ -1,6 +1,8 @@
 # eco-faker
 
 [![CI](https://github.com/Hung1510/Eco-Faker/actions/workflows/ci.yml/badge.svg)](https://github.com/Hung1510/Eco-Faker/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/eco-faker.svg)](https://www.npmjs.com/package/eco-faker)
+[![npm downloads](https://img.shields.io/npm/dt/eco-faker.svg)](https://www.npmjs.com/package/eco-faker)
 
 Stateful, relationally-consistent fake-data generator for e-commerce apps. Not just a pile of random JSON — every `Cart`, `Order`, `Shipment`, and `ReturnRequest` is derived from the same underlying state machine, so the dataset reads like a real store's history instead of unrelated fixtures.
 
@@ -8,7 +10,20 @@ Stateful, relationally-consistent fake-data generator for e-commerce apps. Not j
 Users → Carts → (AbandonedCheckouts | Orders → Shipments → ReturnRequests)
 ```
 
-**Try it in 30 seconds, no Node install required:**
+<!-- TODO: demo GIF -- serve --chaos throwing 200/429/500s in a terminal, plus the web playground's
+     scenario-comparison panel updating live. See "Docker one-liner demo" honorable mention thread
+     for the recording plan (ScreenToGif, trim to ~8-10s per clip, export under ~4MB).
+![eco-faker demo](./docs/demo.gif)
+-->
+
+**Try it in 30 seconds:**
+
+```bash
+npm install -g eco-faker
+my-eco-gen generate --scenario black-friday --users 100 --format sql --output ./seed.sql
+```
+
+No Node? No problem:
 
 ```bash
 docker compose up --build
@@ -40,7 +55,24 @@ docker compose up --build
 
 ## Install
 
+**As a CLI tool:**
+
 ```bash
+npm install -g eco-faker
+my-eco-gen --help
+```
+
+**As a library, in a project:**
+
+```bash
+npm install eco-faker
+```
+
+**From source** (for contributing, or to run the web playground / static demo):
+
+```bash
+git clone https://github.com/Hung1510/Eco-Faker.git
+cd eco-faker
 npm install
 npm run build
 ```
@@ -59,7 +91,7 @@ That's it — `dataset` already contains relationally-linked `users`, `carts`, `
 ## CLI
 
 ```bash
-npm link   # or: npm install -g .
+npm install -g eco-faker   # or: npm link, if you're working from a source checkout
 my-eco-gen generate --users 50 --format sql --output ./seed.sql
 
 my-eco-gen generate \
@@ -383,20 +415,31 @@ Edit `docker-compose.yml`'s `seed.command` to change the scenario, user count, o
 
 `.github/workflows/pages.yml` is a separate, focused workflow that builds and deploys `web-static/` to GitHub Pages whenever `main` changes anything under `web-static/` or `src/`.
 
-**Honest status:** every command in both workflows has been dry-run locally against this exact repo state and passes -- but neither workflow has executed on GitHub's own runners yet, since that requires an actual push to `Hung1510/Eco-Faker`. The CI badge at the top of this README will go green (or red) the first time `main` is pushed to; until then, treat it as "should pass" rather than "has passed."
+**Status:** the GitHub Pages deployment (`pages.yml`) has run successfully on real GitHub Actions runners. `ci.yml` triggers on the same pushes and its commands were all dry-run locally before being committed, but hasn't been independently confirmed green on a runner as of this writing -- the badge at the top of this README is the live source of truth for that.
 
 ## Publishing to npm
 
-The package is publish-ready (author, repository, keywords, `LICENSE`, `files` allowlist, `prepublishOnly` running build+test+smoke-test). To publish:
+**Live:** [`eco-faker` is published on npm](https://www.npmjs.com/package/eco-faker).
 
 ```bash
-npm login
+npm install -g eco-faker
+my-eco-gen generate --users 50 --format sql --output ./seed.sql
+```
+
+or as a library:
+
+```bash
+npm install eco-faker
+```
+
+To cut a new version and publish an update:
+
+```bash
+npm version patch   # or minor / major
 npm publish --access public
 ```
 
-After that, anyone can run `npx eco-faker` -- wait, the bin is `my-eco-gen`, so: `npx --package eco-faker my-eco-gen generate --users 50 --format sql --output ./seed.sql`, or `npm install -g eco-faker` for a plain `my-eco-gen` on `$PATH`.
-
-**This step hasn't happened yet either** -- it needs your npm account and can't be done from here. Once published, consider adding an npm-version badge next to the CI badge above.
+`prepublishOnly` runs build + full test suite + smoke-test automatically before anything gets uploaded, so a broken build can't ship. Publishing itself requires npm account 2FA (npm now enforces this for all publishes) -- the first-time setup is a one-time hurdle (WebAuthn/Windows Hello or a hardware key; TOTP apps like Authy are no longer offered for new enrollments), but every publish after that just prompts for the same fingerprint/PIN/security key confirmation you already have configured.
 
 ---
 
@@ -527,4 +570,3 @@ npm run build:static && node scripts/smoke-test-static.cjs   # static bundle, fa
 ## Performance
 
 Batch generation is O(n) in `scaleFactor` with no repeated I/O. ~800 orders (and their shipments, checkouts, and returns) generate in well under 300ms on a typical dev machine — 1,000 orders comfortably clears the 500ms target. `--stream` mode keeps memory flat regardless of `scaleFactor` by never materializing the full dataset.
-
