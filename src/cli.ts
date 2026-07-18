@@ -16,6 +16,9 @@ import { parseSqlAlchemySchema } from "./introspect/sqlalchemy.js";
 import { buildSchemaMapping, type SchemaMapping } from "./introspect/mapper.js";
 import { mergeOverrides } from "./config.js";
 import { SCENARIOS, resolveScenario } from "./scenarios.js";
+import { applySemanticFuzzing, summarizeMutations, type FuzzMutationType } from "./fuzz.js";
+import { lintDataset, lintSqlAgainstDatabase } from "./lint.js";
+import { buildUserJourney, pickRichestUserId, renderJourneyHtml } from "./visualize.js";
 import type { EcoFakerConfig, Locale } from "./types.js";
 
 const TOOL_VERSION = "0.1.0";
@@ -71,6 +74,21 @@ function resolveOverrides(opts: Record<string, unknown>): Partial<EcoFakerConfig
     }
   }
   return mergeOverrides(scenarioOverrides, explicitOverrides);
+}
+
+/**
+ * Shared by `fuzz`, `lint`, and `visualize`: load a dataset from
+ * `--input <path>` (any `generate --format json` output) if given,
+ * otherwise generate a fresh one from the usual `addCoreGenerateOptions`
+ * flags -- same "either load or generate" pattern `diff` and `webhook`
+ * already use individually.
+ */
+function loadOrGenerateDataset(opts: Record<string, unknown>) {
+  if (opts.input) {
+    return loadDatasetLike(path.resolve(process.cwd(), opts.input as string));
+  }
+  const overrides = resolveOverrides(opts);
+  return generate(overrides, Date.now());
 }
 
 addCoreGenerateOptions(
@@ -282,6 +300,7 @@ addCoreGenerateOptions(
   .option("--postman-output <path>", "where to write the Postman collection file", "./eco-faker.postman_collection.json")
   .option("--live", "also open a WebSocket at /live broadcasting a steady drip of dataset events")
   .option("--live-interval-ms <number>", "ms between live broadcasts", parseIntArg, 800)
+  .option("--quiet", "suppress the per-request console log line (meaning header is still sent)")
   .action((opts) => {
     const overrides = resolveOverrides(opts);
     const referenceNow = Date.now();
@@ -308,6 +327,7 @@ addCoreGenerateOptions(
       apiKey: opts.apiKey,
       openapi: opts.openapi !== false,
       postman: Boolean(opts.postman),
+      quiet: Boolean(opts.quiet),
       port,
     });
 
@@ -329,6 +349,7 @@ addCoreGenerateOptions(
       if (opts.chaos) console.log(`  chaos mode ON: latency/500/429 injected into /api/* responses`);
       if (opts.apiKey) console.log(`  auth ON: send "Authorization: Bearer ${opts.apiKey}" or every /api/* request gets a 401`);
       if (opts.live) console.log(`  live feed: ws://localhost:${port}/live`);
+      if (!opts.quiet) console.log(`  request log ON: plain-English status meanings printed per request (--quiet to silence)`);
     });
 
     if (opts.live) {
@@ -411,6 +432,145 @@ program
       console.error("\nSchema drift detected -- failing as requested by --fail-on-schema-change.");
       process.exit(1);
     }
+  });
+
+addCoreGenerateOptions(
+  program
+    .command("fuzz")
+    .description(
+      "Semantic fuzzing: mutate a dataset with data that's schema-valid but logically impossible (mismatched addresses, inverted prices, time-paradox returns, oversell quantities) -- finds business-logic bugs schema validation can't catch."
+    )
+)
+  .option("--input <path>", "load an existing dataset.json instead of generating a fresh one")
+  .option("--intensity <level>", "low | medium | extreme", "medium")
+  .option(
+    "--types <list>",
+    "comma-separated subset of: address_mismatch,price_inversion,time_paradox,inventory_oversell (default: all four)"
+  )
+  .option("--fuzz-seed <number>", "seed for reproducible mutation selection", parseIntArg, 1)
+  .option("-o, --output <path>", "where to write the mutated dataset", "./eco-data.fuzzed.json")
+  .option("--report <path>", "also write the mutation log as JSON to this path")
+  .action((opts) => {
+    const dataset = loadOrGenerateDataset(opts);
+    const types = opts.types
+      ? ((opts.types as string).split(",").map((s) => s.trim()) as FuzzMutationType[])
+      : undefined;
+
+    const { dataset: mutated, mutations } = applySemanticFuzzing(dataset, {
+      intensity: opts.intensity as "low" | "medium" | "extreme",
+      types,
+      seed: opts.fuzzSeed as number,
+    });
+
+    const outputPath = path.resolve(process.cwd(), opts.output as string);
+    mkdirSync(path.dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, JSON.stringify(mutated, null, 2), "utf-8");
+
+    const summary = summarizeMutations(mutations);
+    console.log(`Applied ${mutations.length} semantic mutation(s):`);
+    for (const [type, count] of Object.entries(summary)) {
+      if (count > 0) console.log(`  ${type}: ${count}`);
+    }
+    console.log("");
+    for (const m of mutations) {
+      console.log(`  [${m.type}] ${m.table}/${m.recordId}.${m.field}`);
+      console.log(`    ${JSON.stringify(m.before)} -> ${JSON.stringify(m.after)}`);
+      console.log(`    ${m.reason}`);
+    }
+    console.log(`\nMutated dataset written to ${outputPath}`);
+
+    if (opts.report) {
+      const reportPath = path.resolve(process.cwd(), opts.report as string);
+      writeFileSync(reportPath, JSON.stringify({ mutations, summary }, null, 2), "utf-8");
+      console.log(`Mutation report written to ${reportPath}`);
+    }
+
+    console.log(
+      `\nNote: this mutates data only -- firing these payloads at a live API and asserting on the response is planned for the contract-testing engine ("my-eco-gen test --contract"), which isn't built yet. For now, feed ${path.basename(outputPath)} into your own seed/insert pipeline (or "my-eco-gen lint --input ${path.basename(outputPath)}") and see what breaks.`
+    );
+  });
+
+addCoreGenerateOptions(
+  program
+    .command("lint")
+    .description(
+      "Pre-flight data quality gate: check a dataset for orphaned foreign keys, duplicate ids/emails, and financial/temporal inconsistencies -- entirely offline, no database required."
+    )
+)
+  .option("--input <path>", "load an existing dataset.json instead of generating a fresh one")
+  .option("--sql <path>", "also dry-run this .sql file against a real Postgres database inside BEGIN/ROLLBACK (requires --db-url and the optional 'pg' package)")
+  .option("--db-url <url>", "Postgres connection string for --sql (never committed to -- always rolled back)")
+  .action(async (opts) => {
+    const dataset = loadOrGenerateDataset(opts);
+    const issues = lintDataset(dataset);
+
+    if (issues.length === 0) {
+      console.log("ok: no lint issues found (referential integrity, uniqueness, financial/temporal consistency).");
+    } else {
+      const errors = issues.filter((i) => i.severity === "error");
+      const warnings = issues.filter((i) => i.severity === "warning");
+      for (const issue of issues) {
+        const prefix = issue.severity === "error" ? "error" : "warning";
+        const location = issue.recordId ? `${issue.table}/${issue.recordId}` : issue.table;
+        console.log(`${prefix}: [${issue.rule}] ${location}: ${issue.message}`);
+      }
+      console.log(`\n${errors.length} error(s), ${warnings.length} warning(s).`);
+    }
+
+    if (opts.sql) {
+      if (!opts.dbUrl) {
+        console.error("\n--sql requires --db-url.");
+        process.exit(1);
+      }
+      const sql = readFileSync(path.resolve(process.cwd(), opts.sql as string), "utf-8");
+      console.log(`\nDry-running ${opts.sql} against ${opts.dbUrl} inside BEGIN/ROLLBACK...`);
+      try {
+        const result = await lintSqlAgainstDatabase(sql, opts.dbUrl as string);
+        if (result.ok) {
+          console.log("ok: SQL applied cleanly against the real schema's constraints (then rolled back).");
+        } else {
+          console.log(`error: the database rejected the SQL: ${result.error}`);
+          process.exit(1);
+        }
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exit(1);
+      }
+    }
+
+    if (issues.some((i) => i.severity === "error")) {
+      process.exit(1);
+    }
+  });
+
+addCoreGenerateOptions(
+  program
+    .command("visualize")
+    .description(
+      "Render one customer's full journey (signup -> cart -> order -> shipments -> returns) as a self-contained, animated HTML timeline (D3, opens directly in a browser)."
+    )
+)
+  .option("--input <path>", "load an existing dataset.json instead of generating a fresh one")
+  .option("--user <id>", "user id to visualize (default: the user with the richest journey)")
+  .option("-o, --output <path>", "output HTML path", "./journey.html")
+  .action((opts) => {
+    const dataset = loadOrGenerateDataset(opts);
+    const userId = (opts.user as string | undefined) ?? pickRichestUserId(dataset);
+    const user = dataset.users.find((u) => u.id === userId);
+    if (!user) {
+      console.error(`No user with id "${userId}" in this dataset.`);
+      process.exit(1);
+    }
+
+    const events = buildUserJourney(dataset, userId);
+    const html = renderJourneyHtml(user, events);
+
+    const outputPath = path.resolve(process.cwd(), opts.output as string);
+    mkdirSync(path.dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, html, "utf-8");
+
+    console.log(`${user.firstName} ${user.lastName} (${userId}): ${events.length} events.`);
+    console.log(`Journey timeline written to ${outputPath} -- open it directly in a browser.`);
   });
 
 program.parse();
