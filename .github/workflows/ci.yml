@@ -153,3 +153,20 @@ jobs:
 
       - name: webhook simulator dry-run produces chronological events
         run: node dist/cli.js webhook --url http://example.invalid --users 30 --seed 2 --dry-run --limit 10
+
+      - name: postman collection export is valid and matches the /postman.json endpoint
+        run: |
+          node dist/cli.js serve --users 30 --seed 1 --port 4504 --postman --postman-output /tmp/eco.postman_collection.json --api-key testkey &
+          SERVER_PID=$!
+          sleep 2
+          curl -sf "http://localhost:4504/postman.json" -o /tmp/postman-endpoint.json
+          kill $SERVER_PID
+          node -e "
+            const fs = require('fs');
+            const file = JSON.parse(fs.readFileSync('/tmp/eco.postman_collection.json', 'utf8'));
+            const endpoint = JSON.parse(fs.readFileSync('/tmp/postman-endpoint.json', 'utf8'));
+            if (JSON.stringify(file) !== JSON.stringify(endpoint)) { console.error('file and endpoint diverge'); process.exit(1); }
+            if (!file.info.schema.includes('v2.1.0')) { console.error('wrong postman schema version'); process.exit(1); }
+            if (file.auth.bearer[0].value !== 'testkey') { console.error('auth block missing/wrong'); process.exit(1); }
+            console.log('postman collection OK:', file.item.length, 'top-level items');
+          "

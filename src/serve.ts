@@ -1,6 +1,7 @@
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { Dataset } from "./types.js";
 import { buildOpenApiSpec } from "./openapi.js";
+import { buildPostmanCollection } from "./postman.js";
 
 type DatasetArrayKey = Exclude<keyof Dataset, "config">;
 
@@ -42,6 +43,8 @@ export interface ServeOptions {
   apiKey?: string;
   /** Mount GET /openapi.json describing every route (default: true). */
   openapi?: boolean;
+  /** Mount GET /postman.json -- a ready-to-import Postman Collection v2.1 (default: false). */
+  postman?: boolean;
   /** Port, only used to fill in the OpenAPI `servers` entry -- doesn't bind anything itself. */
   port?: number;
 }
@@ -142,12 +145,19 @@ export function createMockApiServer(dataset: Dataset, options: ServeOptions = {}
       chaos: Boolean(options.chaos),
       auth: Boolean(options.apiKey),
       openapi: options.openapi !== false ? "/openapi.json" : null,
+      postman: options.postman ? "/postman.json" : null,
     });
   });
 
   if (options.openapi !== false) {
     app.get("/openapi.json", (_req: Request, res: Response) => {
       res.json(buildOpenApiSpec(dataset, options.port ?? 4000));
+    });
+  }
+
+  if (options.postman) {
+    app.get("/postman.json", (_req: Request, res: Response) => {
+      res.json(buildPostmanCollection({ port: options.port ?? 4000, apiKey: options.apiKey }));
     });
   }
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { generate, generateRecords } from "./generator.js";
 import { generateStores } from "./multi-store.js";
 import { createMockApiServer } from "./serve.js";
+import { buildPostmanCollection } from "./postman.js";
 import { attachLiveFeed } from "./live.js";
 import { buildWebhookEvents, replayEvents } from "./webhook.js";
 import { diffDatasets, formatDiffReport, loadDatasetLike } from "./diff.js";
@@ -277,6 +278,8 @@ addCoreGenerateOptions(
   .option("--chaos-rate-limit-rate <number>", "0..1 chance of a simulated 429 (with --chaos)", parseFloatArg)
   .option("--api-key <key>", "require `Authorization: Bearer <key>` on every /api/* request")
   .option("--no-openapi", "don't serve GET /openapi.json")
+  .option("--postman", "serve GET /postman.json and write a .postman_collection.json file to disk at startup")
+  .option("--postman-output <path>", "where to write the Postman collection file", "./eco-faker.postman_collection.json")
   .option("--live", "also open a WebSocket at /live broadcasting a steady drip of dataset events")
   .option("--live-interval-ms <number>", "ms between live broadcasts", parseIntArg, 800)
   .action((opts) => {
@@ -304,8 +307,17 @@ addCoreGenerateOptions(
       chaos: chaos && Object.keys(chaos).length > 0 ? chaos : opts.chaos ? true : undefined,
       apiKey: opts.apiKey,
       openapi: opts.openapi !== false,
+      postman: Boolean(opts.postman),
       port,
     });
+
+    if (opts.postman) {
+      const collection = buildPostmanCollection({ port, apiKey: opts.apiKey });
+      const postmanPath = path.resolve(process.cwd(), opts.postmanOutput);
+      mkdirSync(path.dirname(postmanPath), { recursive: true });
+      writeFileSync(postmanPath, JSON.stringify(collection, null, 2), "utf-8");
+      console.error(`Postman collection written to ${postmanPath}`);
+    }
 
     const server = app.listen(port, () => {
       console.log(`Mock API running at http://localhost:${port}`);
@@ -313,6 +325,7 @@ addCoreGenerateOptions(
       console.log(`  GET http://localhost:${port}/api/shipments/:id`);
       console.log(`  GET http://localhost:${port}/  (endpoint list + counts)`);
       if (opts.openapi !== false) console.log(`  GET http://localhost:${port}/openapi.json  (import into Postman/Insomnia/Swagger UI)`);
+      if (opts.postman) console.log(`  GET http://localhost:${port}/postman.json  (or import ${opts.postmanOutput} directly)`);
       if (opts.chaos) console.log(`  chaos mode ON: latency/500/429 injected into /api/* responses`);
       if (opts.apiKey) console.log(`  auth ON: send "Authorization: Bearer ${opts.apiKey}" or every /api/* request gets a 401`);
       if (opts.live) console.log(`  live feed: ws://localhost:${port}/live`);

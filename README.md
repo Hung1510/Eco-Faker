@@ -28,7 +28,7 @@ docker compose up --build
 - **Three output formats** — JSON, SQL (Postgres-flavored `CREATE TABLE` + `INSERT`), CSV
 - **Schema-aware output** — point it at an existing Prisma, Drizzle, or SQLAlchemy schema and it maps its own columns onto yours
 - **High-volume streaming** — NDJSON straight to stdout, no dataset ever held fully in memory
-- **Mock REST API** — `my-eco-gen serve` spins up a paginated, filterable, json-server-style API backed by a generated dataset, with optional chaos mode, API-key auth, an OpenAPI spec, and a live WebSocket event feed
+- **Mock REST API** — `my-eco-gen serve` spins up a paginated, filterable, json-server-style API backed by a generated dataset, with optional chaos mode, API-key auth, an OpenAPI spec, a Postman collection export, and a live WebSocket event feed
 - **Webhook event simulator** — replay the dataset as a paced, chronological stream of `order.created`/`cart.abandoned`/`shipment.delivered`-style events POSTed to a URL
 - **Dataset diffing** — `my-eco-gen diff` reports row-count deltas, schema drift, and status-distribution shifts between two datasets or snapshots
 - **Multi-store mode** — `--stores N` generates N independent, distinctly-seeded stores in one call
@@ -151,6 +151,15 @@ my-eco-gen serve --users 300 --live --live-interval-ms 500
 ```
 
 Opens `ws://localhost:4000/live`, broadcasting one dataset-derived event every `--live-interval-ms` (default 800ms) to every connected client -- literally "watch orders roll in" instead of a static chart. It reuses the same event list the webhook simulator builds, so a `shipment.delivered` message references a shipment also reachable via `GET /api/shipments/:id` on the same server -- consistent ids across the REST API and the live feed. Loops back to the start when the event list is exhausted.
+
+### Postman collection export
+
+```bash
+my-eco-gen serve --users 300 --postman
+my-eco-gen serve --users 300 --postman --postman-output ./my-collection.json --api-key my-secret-key
+```
+
+Writes a ready-to-import Postman Collection v2.1 file to disk at startup (default `./eco-faker.postman_collection.json`) *and* serves it live at `GET /postman.json` -- import via file or via URL, whichever's more convenient. One folder per resource (Users, Carts, Abandoned Checkouts, Orders, Shipments, Returns), each with a pre-filled "List" request (page/pageSize/sort/order params, plus a disabled example filter) and a "Get by id" request. If `--api-key` is set, the collection gets a matching collection-level Bearer auth block, so authenticated requests work the moment you import it -- no manual header setup. Both the file and the `/postman.json` endpoint are generated from the exact same `TABLE_ROUTES` the REST server and the OpenAPI spec use, so all three never drift out of sync with each other.
 
 ## Webhook event simulator
 
@@ -370,7 +379,7 @@ Edit `docker-compose.yml`'s `seed.command` to change the scenario, user count, o
 
 - **`test`** -- typecheck + unit tests + build on Node 18.x and 20.x, `npm run smoke-test` (every scenario preset against compiled `dist/`, asserting relational/financial invariants independent of the vitest suite), and a static-bundle check (`npm run build:static` + `scripts/smoke-test-static.cjs` against a fake DOM)
 - **`cli-e2e`** -- generate in all three formats, snapshot+replay byte-identical diff, `--stream` produces valid NDJSON, every scenario preset runs, `diff` reports zero drift comparing a run to itself, `--stores` generates N independent stores
-- **`mock-api-e2e`** -- `serve` answers on `/`, `/api/orders`, and `/openapi.json`; `--chaos --chaos-error-rate 1` reliably returns `500`; `--api-key` rejects unauthenticated requests and accepts the correct key; `/openapi.json`'s `$ref` pointers all resolve; `webhook --dry-run` produces a valid chronological event list
+- **`mock-api-e2e`** -- `serve` answers on `/`, `/api/orders`, and `/openapi.json`; `--chaos --chaos-error-rate 1` reliably returns `500`; `--api-key` rejects unauthenticated requests and accepts the correct key; `/openapi.json`'s `$ref` pointers all resolve; `webhook --dry-run` produces a valid chronological event list; `--postman`'s output file and its `/postman.json` endpoint are byte-identical and carry the right auth block
 
 `.github/workflows/pages.yml` is a separate, focused workflow that builds and deploys `web-static/` to GitHub Pages whenever `main` changes anything under `web-static/` or `src/`.
 
@@ -457,8 +466,9 @@ src/
   types.ts                shared TypeScript types
   generator.ts            orchestrates the full pipeline (generate() and the streaming generateRecords())
   multi-store.ts           generateStores(): N independently-seeded stores in one call
-  serve.ts                 mock REST API (json-server style): chaos mode, API-key auth, /openapi.json
+  serve.ts                 mock REST API (json-server style): chaos mode, API-key auth, /openapi.json, /postman.json
   openapi.ts                hand-written OpenAPI 3.0 spec builder for the mock API
+  postman.ts                 Postman Collection v2.1 export, derived from the same route table
   live.ts                   WebSocket /live feed, broadcasts webhook-shaped events at an interval
   webhook.ts                webhook event builder + paced replay, browser-safe
   diff.ts                   dataset/snapshot structural diffing, reads files via node:fs
@@ -512,7 +522,7 @@ npm run smoke-test          # structural smoke test against compiled dist/ (run 
 npm run build:static && node scripts/smoke-test-static.cjs   # static bundle, fake-DOM check
 ```
 
-61 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it), the mock REST API server (filtering, sorting, pagination, 404s), chaos mode (forced error/rate-limit rates actually produce the expected status codes, and chaos never touches `/` or `/openapi.json`), API-key auth (rejects missing/wrong keys, accepts the right one, never gates the docs routes), the OpenAPI spec (every resource has list+item paths, every `$ref` resolves to a real schema), the live WebSocket feed (chronologically-shaped events broadcast to a real connected client), the webhook simulator (chronological ordering, event-type filtering, granular shipment lifecycle events), dataset diffing (including a regression test for a real false-positive bug where an empty table was flagged as "schema drift" just because it happened to sample zero rows), multi-store determinism, and locale-aware currency formatting (including on anomaly-adjusted totals).
+64 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it), the mock REST API server (filtering, sorting, pagination, 404s), chaos mode (forced error/rate-limit rates actually produce the expected status codes, and chaos never touches `/` or `/openapi.json`), API-key auth (rejects missing/wrong keys, accepts the right one, never gates the docs routes), the OpenAPI spec (every resource has list+item paths, every `$ref` resolves to a real schema), the Postman collection export (correct v2.1 structure, one folder per resource, the file and `/postman.json` endpoint stay byte-identical, the auth block matches `--api-key`), the live WebSocket feed (chronologically-shaped events broadcast to a real connected client), the webhook simulator (chronological ordering, event-type filtering, granular shipment lifecycle events), dataset diffing (including a regression test for a real false-positive bug where an empty table was flagged as "schema drift" just because it happened to sample zero rows), multi-store determinism, and locale-aware currency formatting (including on anomaly-adjusted totals).
 
 ## Performance
 

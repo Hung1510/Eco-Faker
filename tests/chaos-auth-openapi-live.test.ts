@@ -4,6 +4,7 @@ import WebSocket from "ws";
 import { generate } from "../src/generator.js";
 import { createMockApiServer, DEFAULT_CHAOS_OPTIONS } from "../src/serve.js";
 import { buildOpenApiSpec } from "../src/openapi.js";
+import { buildPostmanCollection } from "../src/postman.js";
 import { attachLiveFeed } from "../src/live.js";
 
 const dataset = generate({ seed: 1, scaleFactor: 60 });
@@ -95,6 +96,47 @@ describe("API key auth", () => {
       expect(openapi.status).toBe(200);
     } finally {
       close();
+    }
+  });
+});
+
+describe("Postman collection export", () => {
+  it("produces a valid v2.1 collection with one folder per resource and 2 requests each", () => {
+    const collection = buildPostmanCollection({ port: 4000 }) as any;
+    expect(collection.info.schema).toContain("v2.1.0");
+
+    let requestCount = 0;
+    (function walk(items: any[]) {
+      for (const item of items) {
+        if (item.item) walk(item.item);
+        else if (item.request) requestCount++;
+      }
+    })(collection.item);
+    expect(requestCount).toBe(14); // root + openapi + 6 resources * 2 requests
+
+    const folderNames = collection.item.filter((i: any) => i.item).map((i: any) => i.name);
+    expect(folderNames).toEqual(["Users", "Carts", "Abandoned Checkouts", "Orders", "Shipments", "Returns"]);
+  });
+
+  it("adds a bearer auth block matching --api-key, and omits it otherwise", () => {
+    const withKey = buildPostmanCollection({ port: 4000, apiKey: "secret" }) as any;
+    const withoutKey = buildPostmanCollection({ port: 4000 }) as any;
+    expect(withKey.auth.bearer[0].value).toBe("secret");
+    expect(withoutKey.auth).toBeUndefined();
+  });
+
+  it("mounts an identical collection at GET /postman.json when the server is started with postman: true", async () => {
+    const app = createMockApiServer(dataset, { postman: true, port: 4321 });
+    const server = app.listen(0);
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const res = await fetch(`http://127.0.0.1:${port}/postman.json`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.info.name).toBe("eco-faker mock API");
+    } finally {
+      server.close();
     }
   });
 });
