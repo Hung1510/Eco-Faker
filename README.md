@@ -10,11 +10,7 @@ Stateful, relationally-consistent fake-data generator for e-commerce apps. Not j
 Users → Carts → (AbandonedCheckouts | Orders → Shipments → ReturnRequests)
 ```
 
-<!-- TODO: demo GIF -- serve --chaos throwing 200/429/500s in a terminal, plus the web playground's
-     scenario-comparison panel updating live. See "Docker one-liner demo" honorable mention thread
-     for the recording plan (ScreenToGif, trim to ~8-10s per clip, export under ~4MB).
 ![eco-faker demo](./docs/demo.gif)
--->
 
 **Try it in 30 seconds:**
 
