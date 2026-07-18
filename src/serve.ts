@@ -3,7 +3,7 @@ import type { Dataset } from "./types.js";
 import { buildOpenApiSpec } from "./openapi.js";
 import { buildPostmanCollection } from "./postman.js";
 
-type DatasetArrayKey = Exclude<keyof Dataset, "config">;
+export type DatasetArrayKey = Exclude<keyof Dataset, "config">;
 
 /** URL-friendly route name -> the Dataset key it reads from. */
 export const TABLE_ROUTES: Record<string, DatasetArrayKey> = {
@@ -16,6 +16,78 @@ export const TABLE_ROUTES: Record<string, DatasetArrayKey> = {
 };
 
 const RESERVED_QUERY_KEYS = new Set(["page", "pageSize", "sort", "order"]);
+
+/**
+ * Human-readable, e-commerce-flavored descriptions for what a given
+ * (table, status code) combination actually means -- so `serve` output
+ * reads like "200 -- order fetched successfully" instead of just a bare
+ * status code. Surfaced both in the request logger and in the
+ * `X-Eco-Faker-Meaning` response header.
+ */
+const RESOURCE_MEANINGS: Record<DatasetArrayKey, { list: string; item: string }> = {
+  users: { list: "user directory fetched successfully", item: "user profile fetched successfully" },
+  carts: { list: "cart list fetched successfully", item: "cart fetched successfully" },
+  abandonedCheckouts: {
+    list: "abandoned checkouts fetched successfully",
+    item: "abandoned checkout fetched successfully",
+  },
+  orders: { list: "orders fetched successfully", item: "order fetched -- purchase confirmed" },
+  shipments: { list: "shipments fetched successfully", item: "shipment status fetched successfully" },
+  returnRequests: { list: "return requests fetched successfully", item: "return request fetched successfully" },
+};
+
+const CHAOS_MEANINGS: Record<number, string> = {
+  429: "rate limit hit (simulated chaos)",
+  500: "internal server error (simulated chaos)",
+};
+
+const GENERIC_MEANINGS: Record<number, string> = {
+  401: "missing or invalid API key",
+  404: "no matching record found",
+};
+
+/** Resolve a plain-English description for a table route + status code. */
+export function resolveMeaning(datasetKey: DatasetArrayKey | undefined, hasId: boolean, status: number): string {
+  if (CHAOS_MEANINGS[status]) return CHAOS_MEANINGS[status];
+  if (GENERIC_MEANINGS[status]) return GENERIC_MEANINGS[status];
+  if (status >= 200 && status < 300 && datasetKey) {
+    const meaning = RESOURCE_MEANINGS[datasetKey];
+    return hasId ? meaning.item : meaning.list;
+  }
+  return status >= 500 ? "unexpected server error" : status >= 400 ? "request could not be completed" : "ok";
+}
+
+const ANSI = { green: "\x1b[32m", yellow: "\x1b[33m", red: "\x1b[31m", dim: "\x1b[2m", reset: "\x1b[0m" };
+
+function colorForStatus(status: number): string {
+  if (status >= 500) return ANSI.red;
+  if (status >= 400) return ANSI.yellow;
+  return ANSI.green;
+}
+
+/**
+ * Logs one line per /api/* request once it finishes, in the shape:
+ *   GET /api/orders/ord_123 200 -- order fetched -- purchase confirmed (14ms)
+ * Colored by status bucket (2xx green, 4xx yellow, 5xx red) so `serve --chaos`
+ * output is legible at a glance, whether in a terminal or piped to a file.
+ */
+function requestLogger(datasetKeyForRoute: (routeSegment: string) => DatasetArrayKey | undefined) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const start = Date.now();
+    res.on("finish", () => {
+      const elapsed = Date.now() - start;
+      const segments = req.path.split("/").filter(Boolean); // ["orders"] or ["orders", "ord_123"]
+      const [routeSegment, idSegment] = segments;
+      const datasetKey = datasetKeyForRoute(routeSegment ?? "");
+      const meaning = resolveMeaning(datasetKey, Boolean(idSegment), res.statusCode);
+      const color = colorForStatus(res.statusCode);
+      console.log(
+        `${ANSI.dim}${req.method}${ANSI.reset} ${req.path} ${color}${res.statusCode}${ANSI.reset} -- ${meaning} ${ANSI.dim}(${elapsed}ms)${ANSI.reset}`,
+      );
+    });
+    next();
+  };
+}
 
 export interface ChaosOptions {
   /** Chance [0,1] a request gets an injected latency spike instead of responding immediately. */
@@ -45,6 +117,8 @@ export interface ServeOptions {
   openapi?: boolean;
   /** Mount GET /postman.json -- a ready-to-import Postman Collection v2.1 (default: false). */
   postman?: boolean;
+  /** Suppress the per-request console log line (default: false -- logging is on). */
+  quiet?: boolean;
   /** Port, only used to fill in the OpenAPI `servers` entry -- doesn't bind anything itself. */
   port?: number;
 }
@@ -79,6 +153,30 @@ function paginate(rows: Record<string, unknown>[], query: Request["query"]) {
     data,
     pagination: { page, pageSize, total: rows.length, totalPages: Math.max(1, Math.ceil(rows.length / pageSize)) },
   };
+}
+
+/**
+ * Plain-object equivalents of the three functions above, taking a
+ * URLSearchParams-like record instead of an Express `Request["query"]` --
+ * this is what lets `src/msw.ts` reuse the exact same filter/sort/paginate
+ * behavior as the HTTP server without depending on Express types.
+ */
+export function applyFiltersToRecords(
+  rows: Record<string, unknown>[],
+  query: Record<string, string | undefined>
+): Record<string, unknown>[] {
+  return applyFilters(rows, query as unknown as Request["query"]);
+}
+
+export function applySortToRecords(
+  rows: Record<string, unknown>[],
+  query: Record<string, string | undefined>
+): Record<string, unknown>[] {
+  return applySort(rows, query as unknown as Request["query"]);
+}
+
+export function paginateRecords(rows: Record<string, unknown>[], query: Record<string, string | undefined>) {
+  return paginate(rows, query as unknown as Request["query"]);
 }
 
 /**
@@ -162,6 +260,24 @@ export function createMockApiServer(dataset: Dataset, options: ServeOptions = {}
   }
 
   const apiRouter = express.Router();
+  const datasetKeyForRoute = (routeSegment: string): DatasetArrayKey | undefined => TABLE_ROUTES[routeSegment];
+
+  // Attach X-Eco-Faker-Meaning to every /api/* response (including ones
+  // short-circuited by auth/chaos below) by wrapping res.json once, up front.
+  apiRouter.use((req: Request, res: Response, next: NextFunction) => {
+    const originalJson = res.json.bind(res);
+    res.json = ((body: unknown) => {
+      const [routeSegment, idSegment] = req.path.split("/").filter(Boolean);
+      const meaning = resolveMeaning(datasetKeyForRoute(routeSegment ?? ""), Boolean(idSegment), res.statusCode);
+      res.set("X-Eco-Faker-Meaning", meaning);
+      return originalJson(body);
+    }) as typeof res.json;
+    next();
+  });
+
+  if (options.quiet !== true) {
+    apiRouter.use(requestLogger(datasetKeyForRoute));
+  }
 
   if (options.apiKey) {
     apiRouter.use(authMiddleware(options.apiKey));

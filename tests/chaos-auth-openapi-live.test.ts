@@ -26,6 +26,7 @@ describe("chaos mode", () => {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/users`);
       expect(res.status).toBe(500);
+      expect(res.headers.get("x-eco-faker-meaning")).toBe("internal server error (simulated chaos)");
       const body = await res.json();
       expect(body.error).toMatch(/simulated chaos/i);
     } finally {
@@ -40,6 +41,7 @@ describe("chaos mode", () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/orders`);
       expect(res.status).toBe(429);
       expect(res.headers.get("retry-after")).toBeTruthy();
+      expect(res.headers.get("x-eco-faker-meaning")).toBe("rate limit hit (simulated chaos)");
     } finally {
       close();
     }

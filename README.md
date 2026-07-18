@@ -10,11 +10,7 @@ Stateful, relationally-consistent fake-data generator for e-commerce apps. Not j
 Users → Carts → (AbandonedCheckouts | Orders → Shipments → ReturnRequests)
 ```
 
-<!-- TODO: demo GIF -- serve --chaos throwing 200/429/500s in a terminal, plus the web playground's
-     scenario-comparison panel updating live. See "Docker one-liner demo" honorable mention thread
-     for the recording plan (ScreenToGif, trim to ~8-10s per clip, export under ~4MB).
 ![eco-faker demo](./docs/demo.gif)
--->
 
 **Try it in 30 seconds:**
 
@@ -43,11 +39,15 @@ docker compose up --build
 - **Three output formats** — JSON, SQL (Postgres-flavored `CREATE TABLE` + `INSERT`), CSV
 - **Schema-aware output** — point it at an existing Prisma, Drizzle, or SQLAlchemy schema and it maps its own columns onto yours
 - **High-volume streaming** — NDJSON straight to stdout, no dataset ever held fully in memory
-- **Mock REST API** — `my-eco-gen serve` spins up a paginated, filterable, json-server-style API backed by a generated dataset, with optional chaos mode, API-key auth, an OpenAPI spec, a Postman collection export, and a live WebSocket event feed
+- **Mock REST API** — `my-eco-gen serve` spins up a paginated, filterable, json-server-style API backed by a generated dataset, with optional chaos mode, API-key auth, an OpenAPI spec, a Postman collection export, a live WebSocket event feed, and plain-English request logging
+- **MSW adapter** — `eco-faker/msw` turns a dataset into Mock Service Worker request handlers for `setupServer`/`setupWorker`, sharing the exact same filter/sort/paginate logic as `serve`
+- **Semantic fuzzing** — `my-eco-gen fuzz` mutates a dataset with data that's schema-valid but logically impossible (mismatched addresses, inverted prices, time-paradox returns, oversell quantities), finding business-logic bugs schema validation can't catch
+- **Pre-flight lint** — `my-eco-gen lint` checks referential integrity, uniqueness, and financial/temporal consistency offline (or dry-runs real SQL against a real Postgres inside `BEGIN`/`ROLLBACK`)
 - **Webhook event simulator** — replay the dataset as a paced, chronological stream of `order.created`/`cart.abandoned`/`shipment.delivered`-style events POSTed to a URL
 - **Dataset diffing** — `my-eco-gen diff` reports row-count deltas, schema drift, and status-distribution shifts between two datasets or snapshots
 - **Multi-store mode** — `--stores N` generates N independent, distinctly-seeded stores in one call
 - **Interactive web playground** — sliders + live charts + RFM/cohort segmentation + side-by-side scenario comparison, backed by a small Express API
+- **Customer journey timeline** — `my-eco-gen visualize` renders one customer's full lifecycle as a self-contained, animated D3 timeline (works fully offline, no CDN)
 - **Static browser demo** — the same generator bundled with esbuild and running with zero server, deployable straight to GitHub Pages
 - **One-command Postgres demo** — `docker compose up` generates a scenario and seeds a real database
 - **CI-tested** — GitHub Actions runs typecheck/tests/build/smoke-test/CLI e2e/static-bundle-check on every push, PR, and nightly
@@ -158,6 +158,29 @@ GET  /openapi.json                                 OpenAPI 3.0 spec -- import in
 
 Any query param other than `page`/`pageSize`/`sort`/`order` is treated as an exact-match filter against that field (`?status=delivered`, `?userId=...`). It's deliberately simple -- no query language, just enough surface to build and demo a real UI against. All the usual flags apply (`--scenario`, `--seed`, `--bot-cart-rate`, etc.) since it's generating data through the same pipeline as `generate`.
 
+### Request logging with plain-English status meanings
+
+By default, every `/api/*` request prints a colored, human-readable line to
+the console once it finishes -- not just a bare status code:
+
+```
+GET /api/orders 200 -- orders fetched successfully (3ms)
+GET /api/orders/ord_a1b2 200 -- order fetched -- purchase confirmed (1ms)
+GET /api/orders 429 -- rate limit hit (simulated chaos) (2ms)
+GET /api/users 500 -- internal server error (simulated chaos) (7ms)
+GET /api/orders/does-not-exist 404 -- no matching record found (1ms)
+```
+
+Green for 2xx, yellow for 4xx, red for 5xx. The same description is also
+sent as an `X-Eco-Faker-Meaning` response header on every response
+(including ones short-circuited by chaos mode or auth), so tooling can read
+it programmatically without parsing the console. Disable the console line
+with `--quiet` (the header is still sent either way):
+
+```bash
+my-eco-gen serve --users 300 --chaos --quiet
+```
+
 ### Chaos mode -- don't just mock the happy path
 
 ```bash
@@ -192,6 +215,41 @@ my-eco-gen serve --users 300 --postman --postman-output ./my-collection.json --a
 ```
 
 Writes a ready-to-import Postman Collection v2.1 file to disk at startup (default `./eco-faker.postman_collection.json`) *and* serves it live at `GET /postman.json` -- import via file or via URL, whichever's more convenient. One folder per resource (Users, Carts, Abandoned Checkouts, Orders, Shipments, Returns), each with a pre-filled "List" request (page/pageSize/sort/order params, plus a disabled example filter) and a "Get by id" request. If `--api-key` is set, the collection gets a matching collection-level Bearer auth block, so authenticated requests work the moment you import it -- no manual header setup. Both the file and the `/postman.json` endpoint are generated from the exact same `TABLE_ROUTES` the REST server and the OpenAPI spec use, so all three never drift out of sync with each other.
+
+## MSW (Mock Service Worker) adapter
+
+If your tests already use [MSW](https://mswjs.io) instead of a standalone
+server, skip `serve` entirely and get the same data straight into your
+existing `setupServer`/`setupWorker`:
+
+```bash
+npm install --save-dev msw   # peer dependency, not bundled -- install it yourself
+```
+
+```ts
+import { setupServer } from "msw/node";
+import { generate } from "eco-faker";
+import { toMswHandlers } from "eco-faker/msw";
+
+const dataset = generate({ seed: 1, scenario: "black-friday" });
+const server = setupServer(...toMswHandlers(dataset));
+
+beforeAll(() => server.listen());
+afterAll(() => server.close());
+```
+
+Same routes, same query semantics (`?status=delivered`, `?sort=total&order=desc`,
+`?page=2&pageSize=25`), same `X-Eco-Faker-Meaning` response header as `serve`
+-- `toMswHandlers` reuses the exact same filter/sort/paginate implementation,
+so the two adapters can't drift apart from each other. Handlers match by path
+regardless of origin (`*/api/orders`), so they work whether your app fetches
+`/api/orders` relatively or hits a fully-qualified URL in a Node test
+environment with no `window.location`.
+
+```ts
+// custom mount point, e.g. if your app calls a different base path
+toMswHandlers(dataset, { basePath: "/mock-api" });
+```
 
 ## Webhook event simulator
 
@@ -235,6 +293,61 @@ Cart status distribution:
 
 Schema-drift detection only compares field sets when both sides actually sampled at least one row for that table -- an empty array on one side isn't evidence of a missing field, just missing data (an earlier version of this feature had that false-positive bug; there's a regression test for it now).
 
+## Semantic fuzzing (`fuzz`) -- finding bugs schema validation can't catch
+
+Schema/type fuzzing (nulls, missing fields, wrong types) tests type safety. Semantic fuzzing tests business logic: it generates data that's still perfectly *valid* against a schema, but logically impossible.
+
+```bash
+my-eco-gen fuzz --users 300 --scenario black-friday --intensity extreme --output ./eco-data.fuzzed.json
+```
+
+Four mutation types, each targeting a real class of bug:
+
+- **`address_mismatch`** -- takes a real city/state from one order and a real postal code from a *different* order, producing a shipping address where every field is individually valid but the combination describes nowhere real. Tests whether anything cross-checks postal code against city/state.
+- **`price_inversion`** -- drops a line item's unit price by ~95-99% *without* recomputing the order's subtotal/total, so the order becomes internally inconsistent. Tests whether financial totals are validated on ingest or just trusted as-given -- the class of bug that lets an "impossible discount" through a checkout pipeline.
+- **`time_paradox`** -- dates a return request before the order it's returning was even created. Tests whether temporal ordering between related records is enforced anywhere, since each timestamp alone is still a valid ISO date.
+- **`inventory_oversell`** -- jumps a line item's quantity to 500-999 in a single order. No real per-order retail purchase looks like this; tests whether anything caps implausible per-SKU quantities.
+
+```bash
+my-eco-gen fuzz --types price_inversion,time_paradox --intensity extreme --fuzz-seed 42   # restrict + reproducible
+my-eco-gen fuzz --input ./eco-data.json --report ./mutations.json                          # fuzz existing data, save the mutation log
+```
+
+Mutation selection is deterministic for a given `--fuzz-seed` (default `1`) -- the same seed always produces the same mutations against the same input. Pair it with `lint` (below) to see the mutations actually get caught:
+
+```bash
+my-eco-gen fuzz --users 300 --intensity extreme --output ./fuzzed.json
+my-eco-gen lint --input ./fuzzed.json   # reports the financial_mismatch / temporal_paradox issues fuzz just introduced
+```
+
+**What's not built yet:** firing these mutated payloads at a *live* API and asserting on the response -- that needs the contract-testing engine (`my-eco-gen test --contract`), which is speced but not implemented (see [ROADMAP.md](./ROADMAP.md)). Today, `fuzz` mutates data; wiring it into an HTTP-assertion pipeline against a real API is the next step. In the meantime, feed the mutated dataset into your own seed/insert pipeline and see what breaks.
+
+## Pre-flight lint (`lint`) -- a data quality gate before you insert anything
+
+Offline by default -- checks a dataset in memory for the same class of thing a real `BEGIN; ...; ROLLBACK;` dry run against Postgres would catch, without needing a database:
+
+```bash
+my-eco-gen lint --users 300 --scenario black-friday
+```
+
+```
+ok: no lint issues found (referential integrity, uniqueness, financial/temporal consistency).
+```
+
+Checks: orphaned foreign keys (a `cart.userId` that doesn't match any user), duplicate ids within a table, duplicate user emails, line items whose `lineTotal` doesn't equal `unitPrice * quantity`, orders whose `total` doesn't equal `subtotal + tax + shipping`, and return requests dated before their order. Exits with code `1` if any errors are found, so it's a real CI gate:
+
+```bash
+my-eco-gen lint --input ./eco-data.json || exit 1
+```
+
+**Real Postgres dry-run mode** -- for validating an actual `.sql` seed file against your *actual* schema's real constraints (catching a custom `CHECK` constraint or trigger the offline checks above don't model), pass `--sql` and `--db-url`:
+
+```bash
+my-eco-gen lint --sql ./seed.sql --db-url postgres://user:pass@localhost:5432/staging
+```
+
+This runs the SQL inside `BEGIN; ...; ROLLBACK;` against the real database -- nothing is ever committed. Requires the optional `pg` package (`npm install pg`) and a reachable Postgres instance; unlike the offline checks above, this mode needs a live database and isn't exercised by eco-faker's own test suite for that reason.
+
 ## Multi-store / multi-tenant mode
 
 Generate N independent, distinctly-seeded stores in one call -- useful for marketplace or multi-tenant SaaS demo data:
@@ -271,6 +384,28 @@ web/
                               GET /api/scenarios (list of preset names, for the dropdowns)
   public/index.html sliders + Chart.js, fetches all endpoints and re-renders
 ```
+
+## Customer journey timeline (`visualize`)
+
+The playground above shows aggregate charts. This shows one customer's whole story as an animated, time-scaled swimlane -- proof the data isn't just random rows, it's a coherent narrative:
+
+```bash
+my-eco-gen visualize --users 300 --scenario black-friday --output ./journey.html
+# open journey.html directly in a browser -- no server needed
+```
+
+```
+Terrance Frami (85b02bfe-...): 10 events.
+Journey timeline written to ./journey.html -- open it directly in a browser.
+```
+
+Walks signup → every cart (and whether it was abandoned) → checkout recovery attempts → every order → every shipment tracking event → every return, all pulled from the real relational links between tables (same `userId`/`cartId`/`orderId` foreign keys `lint` checks). Without `--user`, it picks whichever user has the richest journey (most cart/order/return activity) so the default output is actually interesting instead of a near-empty timeline.
+
+```bash
+my-eco-gen visualize --input ./eco-data.json --user <userId> --output ./journey.html   # a specific user from existing data
+```
+
+The output is a single genuinely self-contained HTML file -- D3 is vendored and inlined directly into it (see `assets/d3.v7.min.js`, ISC-licensed), not loaded from a CDN, so it opens and renders correctly from a plain `file://` URL with zero network access, on an air-gapped machine or behind a locked-down proxy.
 
 ## Static browser demo (no server, deployable to GitHub Pages)
 
@@ -565,8 +700,12 @@ npm run smoke-test          # structural smoke test against compiled dist/ (run 
 npm run build:static && node scripts/smoke-test-static.cjs   # static bundle, fake-DOM check
 ```
 
-64 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it), the mock REST API server (filtering, sorting, pagination, 404s), chaos mode (forced error/rate-limit rates actually produce the expected status codes, and chaos never touches `/` or `/openapi.json`), API-key auth (rejects missing/wrong keys, accepts the right one, never gates the docs routes), the OpenAPI spec (every resource has list+item paths, every `$ref` resolves to a real schema), the Postman collection export (correct v2.1 structure, one folder per resource, the file and `/postman.json` endpoint stay byte-identical, the auth block matches `--api-key`), the live WebSocket feed (chronologically-shaped events broadcast to a real connected client), the webhook simulator (chronological ordering, event-type filtering, granular shipment lifecycle events), dataset diffing (including a regression test for a real false-positive bug where an empty table was flagged as "schema drift" just because it happened to sample zero rows), multi-store determinism, and locale-aware currency formatting (including on anomaly-adjusted totals).
+99 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it), the mock REST API server (filtering, sorting, pagination, 404s, and the `X-Eco-Faker-Meaning` response header on success/item/404 responses), the MSW adapter (identical filter/sort/paginate/meaning-header behavior against a real `setupServer`, including a custom `basePath`), chaos mode (forced error/rate-limit rates actually produce the expected status codes and meaning header, and chaos never touches `/` or `/openapi.json`), API-key auth (rejects missing/wrong keys, accepts the right one, never gates the docs routes), the OpenAPI spec (every resource has list+item paths, every `$ref` resolves to a real schema), the Postman collection export (correct v2.1 structure, one folder per resource, the file and `/postman.json` endpoint stay byte-identical, the auth block matches `--api-key`), the live WebSocket feed (chronologically-shaped events broadcast to a real connected client), the webhook simulator (chronological ordering, event-type filtering, granular shipment lifecycle events), dataset diffing (including a regression test for a real false-positive bug where an empty table was flagged as "schema drift" just because it happened to sample zero rows), semantic fuzzing (determinism for a given seed, `--types` restriction, each of the four mutation types actually produces the described inconsistency), the offline linter (catches orphaned foreign keys, duplicate ids/emails, financial mismatches, temporal paradoxes -- including a fuzz-then-lint integration test), the journey timeline builder (chronological ordering, per-user event isolation, richest-user selection, HTML-escaping in the rendered output), multi-store determinism, and locale-aware currency formatting (including on anomaly-adjusted totals).
 
 ## Performance
 
 Batch generation is O(n) in `scaleFactor` with no repeated I/O. ~800 orders (and their shipments, checkouts, and returns) generate in well under 300ms on a typical dev machine — 1,000 orders comfortably clears the 500ms target. `--stream` mode keeps memory flat regardless of `scaleFactor` by never materializing the full dataset.
+
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for what's next: an MSW adapter, a framework scaffolding CLI (`npx eco-faker init`), property-based contract testing against live APIs, and the content/promotion plan tying it together.

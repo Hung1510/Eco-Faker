@@ -38,7 +38,8 @@
     "dist",
     "config.schema.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "assets"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -61,12 +62,33 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.9.0",
     "@types/ws": "^8.18.1",
+    "d3": "^7.9.0",
     "esbuild": "^0.28.1",
+    "msw": "^2.15.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
   },
   "engines": {
     "node": ">=18"
+  },
+  "peerDependencies": {
+    "msw": "^2.15.0"
+  },
+  "peerDependenciesMeta": {
+    "msw": {
+      "optional": true
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./msw": {
+      "types": "./dist/msw.d.ts",
+      "default": "./dist/msw.js"
+    },
+    "./package.json": "./package.json"
   }
 }
