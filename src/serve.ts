@@ -47,7 +47,11 @@ const GENERIC_MEANINGS: Record<number, string> = {
 };
 
 /** Resolve a plain-English description for a table route + status code. */
+<<<<<<< HEAD
 export function resolveMeaning(datasetKey: DatasetArrayKey | undefined, hasId: boolean, status: number): string {
+=======
+function resolveMeaning(datasetKey: DatasetArrayKey | undefined, hasId: boolean, status: number): string {
+>>>>>>> 0a7a7f9211714110ff620a1064cf172f506abd51
   if (CHAOS_MEANINGS[status]) return CHAOS_MEANINGS[status];
   if (GENERIC_MEANINGS[status]) return GENERIC_MEANINGS[status];
   if (status >= 200 && status < 300 && datasetKey) {
