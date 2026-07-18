@@ -282,6 +282,7 @@ addCoreGenerateOptions(
   .option("--postman-output <path>", "where to write the Postman collection file", "./eco-faker.postman_collection.json")
   .option("--live", "also open a WebSocket at /live broadcasting a steady drip of dataset events")
   .option("--live-interval-ms <number>", "ms between live broadcasts", parseIntArg, 800)
+  .option("--quiet", "suppress the per-request console log line (meaning header is still sent)")
   .action((opts) => {
     const overrides = resolveOverrides(opts);
     const referenceNow = Date.now();
@@ -308,6 +309,7 @@ addCoreGenerateOptions(
       apiKey: opts.apiKey,
       openapi: opts.openapi !== false,
       postman: Boolean(opts.postman),
+      quiet: Boolean(opts.quiet),
       port,
     });
 
@@ -329,6 +331,7 @@ addCoreGenerateOptions(
       if (opts.chaos) console.log(`  chaos mode ON: latency/500/429 injected into /api/* responses`);
       if (opts.apiKey) console.log(`  auth ON: send "Authorization: Bearer ${opts.apiKey}" or every /api/* request gets a 401`);
       if (opts.live) console.log(`  live feed: ws://localhost:${port}/live`);
+      if (!opts.quiet) console.log(`  request log ON: plain-English status meanings printed per request (--quiet to silence)`);
     });
 
     if (opts.live) {

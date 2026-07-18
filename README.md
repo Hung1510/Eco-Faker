@@ -10,11 +10,7 @@ Stateful, relationally-consistent fake-data generator for e-commerce apps. Not j
 Users → Carts → (AbandonedCheckouts | Orders → Shipments → ReturnRequests)
 ```
 
-<!-- TODO: demo GIF -- serve --chaos throwing 200/429/500s in a terminal, plus the web playground's
-     scenario-comparison panel updating live. See "Docker one-liner demo" honorable mention thread
-     for the recording plan (ScreenToGif, trim to ~8-10s per clip, export under ~4MB).
 ![eco-faker demo](./docs/demo.gif)
--->
 
 **Try it in 30 seconds:**
 
@@ -157,6 +153,29 @@ GET  /openapi.json                                 OpenAPI 3.0 spec -- import in
 ```
 
 Any query param other than `page`/`pageSize`/`sort`/`order` is treated as an exact-match filter against that field (`?status=delivered`, `?userId=...`). It's deliberately simple -- no query language, just enough surface to build and demo a real UI against. All the usual flags apply (`--scenario`, `--seed`, `--bot-cart-rate`, etc.) since it's generating data through the same pipeline as `generate`.
+
+### Request logging with plain-English status meanings
+
+By default, every `/api/*` request prints a colored, human-readable line to
+the console once it finishes -- not just a bare status code:
+
+```
+GET /api/orders 200 -- orders fetched successfully (3ms)
+GET /api/orders/ord_a1b2 200 -- order fetched -- purchase confirmed (1ms)
+GET /api/orders 429 -- rate limit hit (simulated chaos) (2ms)
+GET /api/users 500 -- internal server error (simulated chaos) (7ms)
+GET /api/orders/does-not-exist 404 -- no matching record found (1ms)
+```
+
+Green for 2xx, yellow for 4xx, red for 5xx. The same description is also
+sent as an `X-Eco-Faker-Meaning` response header on every response
+(including ones short-circuited by chaos mode or auth), so tooling can read
+it programmatically without parsing the console. Disable the console line
+with `--quiet` (the header is still sent either way):
+
+```bash
+my-eco-gen serve --users 300 --chaos --quiet
+```
 
 ### Chaos mode -- don't just mock the happy path
 
@@ -565,8 +584,12 @@ npm run smoke-test          # structural smoke test against compiled dist/ (run 
 npm run build:static && node scripts/smoke-test-static.cjs   # static bundle, fake-DOM check
 ```
 
-64 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it), the mock REST API server (filtering, sorting, pagination, 404s), chaos mode (forced error/rate-limit rates actually produce the expected status codes, and chaos never touches `/` or `/openapi.json`), API-key auth (rejects missing/wrong keys, accepts the right one, never gates the docs routes), the OpenAPI spec (every resource has list+item paths, every `$ref` resolves to a real schema), the Postman collection export (correct v2.1 structure, one folder per resource, the file and `/postman.json` endpoint stay byte-identical, the auth block matches `--api-key`), the live WebSocket feed (chronologically-shaped events broadcast to a real connected client), the webhook simulator (chronological ordering, event-type filtering, granular shipment lifecycle events), dataset diffing (including a regression test for a real false-positive bug where an empty table was flagged as "schema drift" just because it happened to sample zero rows), multi-store determinism, and locale-aware currency formatting (including on anomaly-adjusted totals).
+67 vitest tests cover relational integrity (no orphaned records), timeline realism (valid event ordering, no future timestamps), financial exactness, determinism, edge cases (missing address, multi-package), anomaly injection (bot carts, remote-shipping surcharges, contradictory returns, the master `anomalies.enabled` switch), scenario presets (resolution, unknown-scenario errors, and `mergeOverrides` precedence -- including a regression test for a real bug where explicit CLI flags could silently clobber a scenario's nested `anomalies` config instead of merging with it), the mock REST API server (filtering, sorting, pagination, 404s, and the `X-Eco-Faker-Meaning` response header on success/item/404 responses), chaos mode (forced error/rate-limit rates actually produce the expected status codes and meaning header, and chaos never touches `/` or `/openapi.json`), API-key auth (rejects missing/wrong keys, accepts the right one, never gates the docs routes), the OpenAPI spec (every resource has list+item paths, every `$ref` resolves to a real schema), the Postman collection export (correct v2.1 structure, one folder per resource, the file and `/postman.json` endpoint stay byte-identical, the auth block matches `--api-key`), the live WebSocket feed (chronologically-shaped events broadcast to a real connected client), the webhook simulator (chronological ordering, event-type filtering, granular shipment lifecycle events), dataset diffing (including a regression test for a real false-positive bug where an empty table was flagged as "schema drift" just because it happened to sample zero rows), multi-store determinism, and locale-aware currency formatting (including on anomaly-adjusted totals).
 
 ## Performance
 
 Batch generation is O(n) in `scaleFactor` with no repeated I/O. ~800 orders (and their shipments, checkouts, and returns) generate in well under 300ms on a typical dev machine — 1,000 orders comfortably clears the 500ms target. `--stream` mode keeps memory flat regardless of `scaleFactor` by never materializing the full dataset.
+
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for what's next: an MSW adapter, a framework scaffolding CLI (`npx eco-faker init`), property-based contract testing against live APIs, and the content/promotion plan tying it together.
