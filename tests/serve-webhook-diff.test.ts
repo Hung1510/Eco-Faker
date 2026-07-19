@@ -57,11 +57,86 @@ describe("multi-store generation", () => {
   });
 });
 
+describe("mock REST API server -- --graphql mounting", () => {
+  const dataset = generate({ seed: 3, scaleFactor: 60 });
+  const app = createMockApiServer(dataset, { graphql: true });
+
+  function requestJson(
+    method: string,
+    urlPath: string,
+    body?: unknown
+  ): Promise<{ status: number; body: any }> {
+    return new Promise((resolve, reject) => {
+      const server = app.listen(0, () => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        fetch(`http://127.0.0.1:${port}${urlPath}`, {
+          method,
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        })
+          .then(async (res) => {
+            const responseBody = await res.json();
+            server.close();
+            resolve({ status: res.status, body: responseBody });
+          })
+          .catch((err) => {
+            server.close();
+            reject(err);
+          });
+      });
+    });
+  }
+
+  it("GET / advertises /graphql when --graphql is enabled", async () => {
+    const { body } = await requestJson("GET", "/");
+    expect(body.graphql).toBe("/graphql");
+  });
+
+  it("GET /graphql returns a usage hint, not an error", async () => {
+    const { status, body } = await requestJson("GET", "/graphql");
+    expect(status).toBe(200);
+    expect(body.message).toMatch(/POST a GraphQL query/);
+  });
+
+  it("POST /graphql executes a real query against the dataset, with filters and pagination", async () => {
+    const { status, body } = await requestJson("POST", "/graphql", {
+      query: `{ orders(filters: { status: "delivered" }, pageSize: 3) { data pagination { total } meaning } }`,
+    });
+    expect(status).toBe(200);
+    expect(body.errors).toBeUndefined();
+    expect(body.data.orders.data.length).toBeLessThanOrEqual(3);
+    expect(body.data.orders.data.every((o: any) => o.status === "delivered")).toBe(true);
+    expect(body.data.orders.meaning).toBe("orders fetched successfully");
+  });
+
+  it("POST /graphql with an invalid query returns GraphQL errors, not a 500", async () => {
+    const { status, body } = await requestJson("POST", "/graphql", { query: `{ notARealField }` });
+    expect(status).toBe(200); // GraphQL convention: errors go in the body, not the HTTP status
+    expect(body.errors).toBeDefined();
+    expect(body.errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe("mock REST API server -- --graphql disabled by default", () => {
+  it("GET / does not advertise /graphql when --graphql is not passed", async () => {
+    const dataset = generate({ seed: 3, scaleFactor: 20 });
+    const app = createMockApiServer(dataset);
+    const server = app.listen(0);
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const res = await fetch(`http://127.0.0.1:${port}/`);
+    const body = await res.json();
+    server.close();
+    expect(body.graphql).toBeNull();
+  });
+});
+
 describe("mock REST API server", () => {
   const dataset = generate({ seed: 3, scaleFactor: 60 });
   const app = createMockApiServer(dataset);
 
-  function request(method: string, urlPath: string): Promise<{ status: number; body: any }> {
+  function request(method: string, urlPath: string): Promise<{ status: number; body: any; headers: Headers }> {
     return new Promise((resolve, reject) => {
       const server = app.listen(0, () => {
         const address = server.address();
@@ -70,7 +145,7 @@ describe("mock REST API server", () => {
           .then(async (res) => {
             const body = await res.json();
             server.close();
-            resolve({ status: res.status, body });
+            resolve({ status: res.status, body, headers: res.headers });
           })
           .catch((err) => {
             server.close();
@@ -112,6 +187,22 @@ describe("mock REST API server", () => {
     const { status, body } = await request("GET", "/api/not-a-real-table");
     expect(status).toBe(404);
     expect(body.availableRoutes).toContain("/api/orders");
+  });
+
+  it("GET /api/orders sets an X-Eco-Faker-Meaning header describing a list fetch", async () => {
+    const { headers } = await request("GET", "/api/orders");
+    expect(headers.get("x-eco-faker-meaning")).toBe("orders fetched successfully");
+  });
+
+  it("GET /api/orders/:id sets an X-Eco-Faker-Meaning header describing a single fetch", async () => {
+    const target = dataset.orders[0];
+    const { headers } = await request("GET", `/api/orders/${target.id}`);
+    expect(headers.get("x-eco-faker-meaning")).toBe("order fetched -- purchase confirmed");
+  });
+
+  it("GET /api/orders/:id with an unknown id sets a 404 meaning header", async () => {
+    const { headers } = await request("GET", "/api/orders/does-not-exist");
+    expect(headers.get("x-eco-faker-meaning")).toBe("no matching record found");
   });
 });
 

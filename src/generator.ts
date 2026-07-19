@@ -2,6 +2,9 @@ import { Faker, en, en_GB, es, de, fr, vi } from "@faker-js/faker";
 import { Rng } from "./rng.js";
 import { resolveConfig } from "./config.js";
 import { generateUsers } from "./modules/user/index.js";
+import { generateCatalog } from "./modules/catalog/index.js";
+import { generateRecommendationData } from "./modules/recommendations/index.js";
+import { generateInventorySimulation } from "./modules/inventory/index.js";
 import { generateAbandonedCheckout, generateCartsForUser } from "./modules/cart/index.js";
 import { convertCartToOrder } from "./modules/order/index.js";
 import { deriveOrderStatus, generateShipmentsForOrder } from "./modules/tracking/index.js";
@@ -13,12 +16,16 @@ import {
 } from "./modules/anomaly/index.js";
 import type {
   AbandonedCheckout,
+  Brand,
   Cart,
+  Category,
   Dataset,
   EcoFakerConfig,
   Order,
+  Product,
   ReturnRequest,
   Shipment,
+  Supplier,
   User,
 } from "./types.js";
 
@@ -40,6 +47,10 @@ function localeToFakerModule(locale: EcoFakerConfig["locale"]) {
 }
 
 export type StreamRecord =
+  | { table: "categories"; record: Category }
+  | { table: "brands"; record: Brand }
+  | { table: "suppliers"; record: Supplier }
+  | { table: "products"; record: Product }
   | { table: "users"; record: User }
   | { table: "carts"; record: Cart }
   | { table: "abandoned_checkouts"; record: AbandonedCheckout }
@@ -75,14 +86,20 @@ export function* generateRecords(
   const now = referenceNow;
 
   const users = generateUsers(faker, rng, config, now);
+  const catalog = generateCatalog(faker, rng, config);
+
+  for (const category of catalog.categories) yield { table: "categories", record: category };
+  for (const brand of catalog.brands) yield { table: "brands", record: brand };
+  for (const supplier of catalog.suppliers) yield { table: "suppliers", record: supplier };
+  for (const product of catalog.products) yield { table: "products", record: product };
 
   for (const user of users) {
     yield { table: "users", record: user };
 
-    const carts = generateCartsForUser(faker, rng, config, user, now);
+    const carts = generateCartsForUser(faker, rng, config, user, now, catalog.products);
 
     for (const cart of carts) {
-      maybeInjectBotCart(faker, rng, config, cart);
+      maybeInjectBotCart(faker, rng, config, cart, catalog.products);
       yield { table: "carts", record: cart };
 
       if (cart.status === "abandoned") {
@@ -118,12 +135,24 @@ export function* generateRecords(
 export function generate(overrides: Partial<EcoFakerConfig> = {}, referenceNow: number = Date.now()): Dataset {
   const dataset: Dataset = {
     config: resolveConfig(overrides),
+    categories: [],
+    brands: [],
+    suppliers: [],
+    products: [],
     users: [],
     carts: [],
     abandonedCheckouts: [],
     orders: [],
     shipments: [],
     returnRequests: [],
+    productViews: [],
+    searchQueries: [],
+    wishlistItems: [],
+    productRatings: [],
+    warehouses: [],
+    replenishmentOrders: [],
+    stockoutPeriods: [],
+    warehouseTransfers: [],
   };
 
   const iterator = generateRecords(overrides, referenceNow);
@@ -131,6 +160,18 @@ export function generate(overrides: Partial<EcoFakerConfig> = {}, referenceNow: 
   while (!next.done) {
     const { table, record } = next.value;
     switch (table) {
+      case "categories":
+        dataset.categories.push(record);
+        break;
+      case "brands":
+        dataset.brands.push(record);
+        break;
+      case "suppliers":
+        dataset.suppliers.push(record);
+        break;
+      case "products":
+        dataset.products.push(record);
+        break;
       case "users":
         dataset.users.push(record);
         break;
@@ -153,6 +194,33 @@ export function generate(overrides: Partial<EcoFakerConfig> = {}, referenceNow: 
     next = iterator.next();
   }
   dataset.config = next.value; // the resolved config, returned by the generator
+
+  // Recommendation data runs as a separate post-processing pass with its
+  // own decoupled Faker/Rng instances (offset seed) -- see
+  // generateRecommendationData's docstring for why this is a deliberate
+  // architecture choice, not an oversight. It never touches the RNG
+  // stream the rest of the dataset was generated from, so whether this
+  // feature is even enabled has zero effect on every other table's output.
+  const recFaker = new Faker({ locale: localeToFakerModule(dataset.config.locale) });
+  recFaker.seed(dataset.config.seed ^ 0x5eed5eed);
+  const recRng = new Rng(dataset.config.seed ^ 0x5eed5eed);
+  const recData = generateRecommendationData(recFaker, recRng, dataset.config, dataset, referenceNow);
+  dataset.productViews = recData.productViews;
+  dataset.searchQueries = recData.searchQueries;
+  dataset.wishlistItems = recData.wishlistItems;
+  dataset.productRatings = recData.productRatings;
+
+  // Independent seed offset from recommendation data's -- toggling either
+  // feature must never shift the other's output. See
+  // generateInventorySimulation's docstring for why.
+  const invFaker = new Faker({ locale: localeToFakerModule(dataset.config.locale) });
+  invFaker.seed(dataset.config.seed ^ 0x9a7c1a13);
+  const invRng = new Rng(dataset.config.seed ^ 0x9a7c1a13);
+  const invData = generateInventorySimulation(invFaker, invRng, dataset.config, dataset, referenceNow);
+  dataset.warehouses = invData.warehouses;
+  dataset.replenishmentOrders = invData.replenishmentOrders;
+  dataset.stockoutPeriods = invData.stockoutPeriods;
+  dataset.warehouseTransfers = invData.warehouseTransfers;
 
   return dataset;
 }

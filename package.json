@@ -38,7 +38,8 @@
     "dist",
     "config.schema.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "assets"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -48,25 +49,67 @@
     "web": "node web/server.mjs",
     "build:static": "esbuild web-static/src/app.ts --bundle --outfile=web-static/dist/bundle.js --platform=browser --format=iife --minify",
     "smoke-test": "node scripts/smoke-test.mjs",
-    "prepublishOnly": "npm run build && npm test && npm run smoke-test"
+    "prepublishOnly": "npm run build && npm test && npm run smoke-test",
+    "benchmark": "node scripts/benchmark.mjs"
   },
   "dependencies": {
     "@faker-js/faker": "^9.6.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "ajv": "^8.17.1",
     "commander": "^12.1.0",
     "express": "^5.2.1",
-    "ws": "^8.21.1"
+    "ws": "^8.21.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@trpc/server": "^11.18.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.9.0",
     "@types/ws": "^8.18.1",
+    "d3": "^7.9.0",
     "esbuild": "^0.28.1",
+    "graphql": "^17.0.2",
+    "msw": "^2.15.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
   },
   "engines": {
     "node": ">=18"
+  },
+  "peerDependencies": {
+    "@trpc/server": "^11.18.0",
+    "graphql": "^17.0.2",
+    "msw": "^2.15.0"
+  },
+  "peerDependenciesMeta": {
+    "msw": {
+      "optional": true
+    },
+    "@trpc/server": {
+      "optional": true
+    },
+    "graphql": {
+      "optional": true
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./msw": {
+      "types": "./dist/msw.d.ts",
+      "default": "./dist/msw.js"
+    },
+    "./package.json": "./package.json",
+    "./trpc": {
+      "types": "./dist/trpc.d.ts",
+      "default": "./dist/trpc.js"
+    },
+    "./graphql": {
+      "types": "./dist/graphql.d.ts",
+      "default": "./dist/graphql.js"
+    }
   }
 }

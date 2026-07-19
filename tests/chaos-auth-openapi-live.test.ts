@@ -26,6 +26,7 @@ describe("chaos mode", () => {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/users`);
       expect(res.status).toBe(500);
+      expect(res.headers.get("x-eco-faker-meaning")).toBe("internal server error (simulated chaos)");
       const body = await res.json();
       expect(body.error).toMatch(/simulated chaos/i);
     } finally {
@@ -40,6 +41,7 @@ describe("chaos mode", () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/orders`);
       expect(res.status).toBe(429);
       expect(res.headers.get("retry-after")).toBeTruthy();
+      expect(res.headers.get("x-eco-faker-meaning")).toBe("rate limit hit (simulated chaos)");
     } finally {
       close();
     }
@@ -112,10 +114,29 @@ describe("Postman collection export", () => {
         else if (item.request) requestCount++;
       }
     })(collection.item);
-    expect(requestCount).toBe(14); // root + openapi + 6 resources * 2 requests
+    expect(requestCount).toBe(38); // root + openapi + 18 resources * 2 requests
 
     const folderNames = collection.item.filter((i: any) => i.item).map((i: any) => i.name);
-    expect(folderNames).toEqual(["Users", "Carts", "Abandoned Checkouts", "Orders", "Shipments", "Returns"]);
+    expect(folderNames).toEqual([
+      "Warehouses",
+      "Replenishment Orders",
+      "Stockout Periods",
+      "Warehouse Transfers",
+      "Product Views",
+      "Search Queries",
+      "Wishlist Items",
+      "Product Ratings",
+      "Categories",
+      "Brands",
+      "Suppliers",
+      "Products",
+      "Users",
+      "Carts",
+      "Abandoned Checkouts",
+      "Orders",
+      "Shipments",
+      "Returns",
+    ]);
   });
 
   it("adds a bearer auth block matching --api-key, and omits it otherwise", () => {

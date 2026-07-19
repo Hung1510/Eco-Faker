@@ -170,3 +170,81 @@ jobs:
             if (file.auth.bearer[0].value !== 'testkey') { console.error('auth block missing/wrong'); process.exit(1); }
             console.log('postman collection OK:', file.item.length, 'top-level items');
           "
+
+  benchmark:
+    name: Benchmark (generation speed + relational integrity)
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+
+      - name: Run benchmark
+        run: npm run benchmark
+
+      - name: Commit benchmark-results.json if it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- benchmark-results.json; then
+            git add benchmark-results.json
+            git commit -m "chore: update benchmark-results.json [skip ci]"
+            git push
+          else
+            echo "No change in benchmark-results.json -- nothing to commit."
+          fi
+
+  adapters-e2e:
+    name: Adapters end-to-end (MCP, tRPC, GraphQL, live OpenAPI inference)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+
+      - name: MCP server responds to a real stdio tool call
+        run: |
+          node -e "
+            const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+            const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+            (async () => {
+              const client = new Client({ name: 'ci-smoke-test', version: '1.0.0' });
+              const transport = new StdioClientTransport({ command: 'node', args: ['dist/cli.js', 'mcp'] });
+              await client.connect(transport);
+              const { tools } = await client.listTools();
+              if (tools.length !== 7) { console.error('expected 7 tools, got', tools.length); process.exit(1); }
+              const result = await client.callTool({ name: 'generate_dataset', arguments: { scenario: 'steady-state', seed: 1, scaleFactor: 20 } });
+              const body = JSON.parse(result.content[0].text);
+              if (!body.datasetId) { console.error('generate_dataset did not return a datasetId'); process.exit(1); }
+              console.log('MCP server OK:', tools.length, 'tools,', body.counts.orders, 'orders generated');
+              await client.close();
+              process.exit(0);
+            })();
+          "
+
+      - name: Live OpenAPI schema inference against eco-faker's own running serve
+        run: |
+          node dist/cli.js serve --users 50 --seed 1 --port 4600 --quiet &
+          SERVER_PID=$!
+          sleep 2
+          node dist/cli.js init --schema http://localhost:4600/openapi.json -o /tmp/mapping.json
+          kill $SERVER_PID
+          node -e "
+            const m = require('/tmp/mapping.json');
+            const unmapped = Object.entries(m).filter(([,v]) => v.targetModel === null);
+            if (unmapped.length > 0) { console.error('unmapped tables:', unmapped.map(([k]) => k)); process.exit(1); }
+            console.log('All', Object.keys(m).length, 'tables mapped against eco-faker\'s own live OpenAPI spec.');
+          "

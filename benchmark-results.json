@@ -1,0 +1,31 @@
+{
+  "generatedAt": "2026-07-19T00:59:50.546Z",
+  "nodeVersion": "v22.22.2",
+  "scaleFactor": 1000,
+  "seed": 1,
+  "generationMs": 1159.8,
+  "totalRecords": 47261,
+  "recordsPerSecond": 40748,
+  "recordCounts": {
+    "categories": 33,
+    "brands": 13,
+    "suppliers": 6,
+    "products": 150,
+    "users": 1000,
+    "carts": 2527,
+    "abandonedCheckouts": 871,
+    "orders": 1628,
+    "shipments": 1747,
+    "returnRequests": 43,
+    "productViews": 26099,
+    "searchQueries": 9987,
+    "wishlistItems": 1133,
+    "productRatings": 1932,
+    "warehouses": 12,
+    "replenishmentOrders": 51,
+    "stockoutPeriods": 23,
+    "warehouseTransfers": 6
+  },
+  "lintIssueCount": 0,
+  "relationalIntegrityPercent": 100
+}

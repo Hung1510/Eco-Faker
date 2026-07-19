@@ -1,0 +1,26 @@
+# Dedicated to running `serve` as a long-lived, publicly hosted process
+# (Render/Fly/etc) -- separate from the root Dockerfile, which is built for
+# the one-shot `docker compose up` seed-a-local-Postgres demo and exits
+# after seeding. This one binds to the platform-assigned $PORT and stays
+# running.
+FROM node:20-slim AS build
+WORKDIR /app
+COPY package*.json tsconfig.json ./
+RUN npm ci
+COPY src ./src
+COPY config.schema.json ./
+RUN npm run build
+
+FROM node:20-slim
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
+COPY config.schema.json ./
+
+# Regenerates a fresh dataset on every container start (no persistence --
+# this is a public demo/playground, not meant to hold real state). Most
+# hosting platforms inject $PORT; falls back to 4000 for local `docker run`.
+# --chaos, --postman, and --live are on so the hosted instance demonstrates
+# every serve feature, not just the plain REST surface.
+CMD ["/bin/sh", "-c", "node dist/cli.js serve --port ${PORT:-4000} --scenario black-friday --users 300 --chaos --postman --live"]

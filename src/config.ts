@@ -28,6 +28,9 @@ export const DEFAULT_CONFIG: EcoFakerConfig = {
     remoteShippingRate: 0.05,
     contradictoryReturnRate: 0.01,
   },
+  catalogSize: 150,
+  recommendationData: { enabled: true },
+  inventorySimulation: { enabled: true },
 };
 
 let cachedValidate: ((data: unknown) => boolean) & { errors?: ErrorObject[] | null } = undefined as never;
@@ -53,6 +56,8 @@ export function mergeOverrides(...partials: Array<Partial<EcoFakerConfig> | unde
     const priorCartsPerUser = result.cartsPerUser;
     const priorItemsPerCart = result.itemsPerCart;
     const priorAnomalies = result.anomalies;
+    const priorRecommendationData = result.recommendationData;
+    const priorInventorySimulation = result.inventorySimulation;
 
     Object.assign(result, partial);
 
@@ -60,6 +65,18 @@ export function mergeOverrides(...partials: Array<Partial<EcoFakerConfig> | unde
     if (partial.itemsPerCart) result.itemsPerCart = { ...priorItemsPerCart, ...partial.itemsPerCart };
     if (partial.anomalies) {
       result.anomalies = { ...priorAnomalies, ...partial.anomalies } as EcoFakerConfig["anomalies"];
+    }
+    if (partial.recommendationData) {
+      result.recommendationData = {
+        ...priorRecommendationData,
+        ...partial.recommendationData,
+      } as EcoFakerConfig["recommendationData"];
+    }
+    if (partial.inventorySimulation) {
+      result.inventorySimulation = {
+        ...priorInventorySimulation,
+        ...partial.inventorySimulation,
+      } as EcoFakerConfig["inventorySimulation"];
     }
   }
   return result;
@@ -77,6 +94,8 @@ export function resolveConfig(overrides: Partial<EcoFakerConfig> = {}): EcoFaker
     cartsPerUser: { ...DEFAULT_CONFIG.cartsPerUser, ...overrides.cartsPerUser },
     itemsPerCart: { ...DEFAULT_CONFIG.itemsPerCart, ...overrides.itemsPerCart },
     anomalies: { ...DEFAULT_CONFIG.anomalies, ...overrides.anomalies },
+    recommendationData: { ...DEFAULT_CONFIG.recommendationData, ...overrides.recommendationData },
+    inventorySimulation: { ...DEFAULT_CONFIG.inventorySimulation, ...overrides.inventorySimulation },
   };
 
   const validate = getValidator();

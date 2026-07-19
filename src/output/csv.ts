@@ -13,7 +13,7 @@ function escapeCsv(value: string): string {
   return value;
 }
 
-function tableToCsv(columns: string[], headerColumns: string[], rows: Record<string, unknown>[]): string {
+export function tableToCsv(columns: string[], headerColumns: string[], rows: Record<string, unknown>[]): string {
   if (rows.length === 0) return "";
   const lines = [
     headerColumns.join(","),
@@ -39,6 +39,46 @@ export function toCsv(dataset: Dataset, mapping?: SchemaMapping): string {
   const sections: string[] = [];
 
   const tables: Array<[string, string[], Record<string, unknown>[]]> = [
+    [
+      "categories",
+      CANONICAL_COLUMNS.categories,
+      dataset.categories.map((c) => ({
+        id: c.id,
+        name: c.name,
+        slug: c.slug,
+        parent_category_id: c.parentCategoryId,
+      })),
+    ],
+    [
+      "brands",
+      CANONICAL_COLUMNS.brands,
+      dataset.brands.map((b) => ({ id: b.id, name: b.name })),
+    ],
+    [
+      "suppliers",
+      CANONICAL_COLUMNS.suppliers,
+      dataset.suppliers.map((s) => ({
+        id: s.id,
+        name: s.name,
+        country: s.country,
+        lead_time_days: s.leadTimeDays,
+      })),
+    ],
+    [
+      "products",
+      CANONICAL_COLUMNS.products,
+      dataset.products.map((p) => ({
+        id: p.id,
+        sku: p.sku,
+        name: p.name,
+        category_id: p.categoryId,
+        brand_id: p.brandId,
+        supplier_id: p.supplierId,
+        base_price: p.basePrice,
+        currency: p.currency,
+        variants: p.variants,
+      })),
+    ],
     [
       "users",
       CANONICAL_COLUMNS.users,
@@ -126,6 +166,98 @@ export function toCsv(dataset: Dataset, mapping?: SchemaMapping): string {
         refund_amount: r.refundAmount,
         requested_at: r.requestedAt,
         resolved_at: r.resolvedAt,
+      })),
+    ],
+    [
+      "product_views",
+      CANONICAL_COLUMNS.product_views,
+      dataset.productViews.map((v) => ({
+        id: v.id,
+        user_id: v.userId,
+        product_id: v.productId,
+        timestamp: v.timestamp,
+        source: v.source,
+      })),
+    ],
+    [
+      "search_queries",
+      CANONICAL_COLUMNS.search_queries,
+      dataset.searchQueries.map((q) => ({
+        id: q.id,
+        user_id: q.userId,
+        query: q.query,
+        timestamp: q.timestamp,
+        result_count: q.resultCount,
+        clicked_product_id: q.clickedProductId,
+      })),
+    ],
+    [
+      "wishlist_items",
+      CANONICAL_COLUMNS.wishlist_items,
+      dataset.wishlistItems.map((w) => ({
+        id: w.id,
+        user_id: w.userId,
+        product_id: w.productId,
+        added_at: w.addedAt,
+      })),
+    ],
+    [
+      "product_ratings",
+      CANONICAL_COLUMNS.product_ratings,
+      dataset.productRatings.map((r) => ({
+        id: r.id,
+        user_id: r.userId,
+        product_id: r.productId,
+        order_id: r.orderId,
+        rating: r.rating,
+        review_text: r.reviewText,
+        created_at: r.createdAt,
+      })),
+    ],
+    [
+      "warehouses",
+      CANONICAL_COLUMNS.warehouses,
+      dataset.warehouses.map((w) => ({ id: w.id, name: w.name, country: w.country })),
+    ],
+    [
+      "replenishment_orders",
+      CANONICAL_COLUMNS.replenishment_orders,
+      dataset.replenishmentOrders.map((r) => ({
+        id: r.id,
+        product_id: r.productId,
+        supplier_id: r.supplierId,
+        warehouse_id: r.warehouseId,
+        quantity_ordered: r.quantityOrdered,
+        ordered_at: r.orderedAt,
+        expected_delivery_at: r.expectedDeliveryAt,
+        received_at: r.receivedAt,
+        status: r.status,
+      })),
+    ],
+    [
+      "stockout_periods",
+      CANONICAL_COLUMNS.stockout_periods,
+      dataset.stockoutPeriods.map((s) => ({
+        id: s.id,
+        product_id: s.productId,
+        variant_id: s.variantId,
+        warehouse_id: s.warehouseId,
+        started_at: s.startedAt,
+        ended_at: s.endedAt,
+        resolved_by_replenishment_id: s.resolvedByReplenishmentId,
+      })),
+    ],
+    [
+      "warehouse_transfers",
+      CANONICAL_COLUMNS.warehouse_transfers,
+      dataset.warehouseTransfers.map((t) => ({
+        id: t.id,
+        product_id: t.productId,
+        from_warehouse_id: t.fromWarehouseId,
+        to_warehouse_id: t.toWarehouseId,
+        quantity: t.quantity,
+        initiated_at: t.initiatedAt,
+        completed_at: t.completedAt,
       })),
     ],
   ];

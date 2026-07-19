@@ -1,6 +1,133 @@
 import type { Dataset } from "./types.js";
 
 const RESOURCE_SCHEMAS: Record<string, object> = {
+  warehouses: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      name: { type: "string" },
+      country: { type: "string" },
+    },
+  },
+  "replenishment-orders": {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      productId: { type: "string", format: "uuid" },
+      supplierId: { type: "string", format: "uuid" },
+      warehouseId: { type: "string", format: "uuid" },
+      quantityOrdered: { type: "integer" },
+      orderedAt: { type: "string", format: "date-time" },
+      expectedDeliveryAt: { type: "string", format: "date-time" },
+      receivedAt: { type: "string", format: "date-time", nullable: true },
+      status: { type: "string", enum: ["ordered", "in_transit", "received", "delayed"] },
+    },
+  },
+  "stockout-periods": {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      productId: { type: "string", format: "uuid" },
+      variantId: { type: "string", format: "uuid", nullable: true },
+      warehouseId: { type: "string", format: "uuid" },
+      startedAt: { type: "string", format: "date-time" },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+      resolvedByReplenishmentId: { type: "string", format: "uuid", nullable: true },
+    },
+  },
+  "warehouse-transfers": {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      productId: { type: "string", format: "uuid" },
+      fromWarehouseId: { type: "string", format: "uuid" },
+      toWarehouseId: { type: "string", format: "uuid" },
+      quantity: { type: "integer" },
+      initiatedAt: { type: "string", format: "date-time" },
+      completedAt: { type: "string", format: "date-time", nullable: true },
+    },
+  },
+  "product-views": {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      userId: { type: "string", format: "uuid" },
+      productId: { type: "string", format: "uuid" },
+      timestamp: { type: "string", format: "date-time" },
+      source: { type: "string", enum: ["search", "category_browse", "recommendation", "direct"] },
+    },
+  },
+  "search-queries": {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      userId: { type: "string", format: "uuid" },
+      query: { type: "string" },
+      timestamp: { type: "string", format: "date-time" },
+      resultCount: { type: "integer" },
+      clickedProductId: { type: "string", format: "uuid", nullable: true },
+    },
+  },
+  "wishlist-items": {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      userId: { type: "string", format: "uuid" },
+      productId: { type: "string", format: "uuid" },
+      addedAt: { type: "string", format: "date-time" },
+    },
+  },
+  "product-ratings": {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      userId: { type: "string", format: "uuid" },
+      productId: { type: "string", format: "uuid" },
+      orderId: { type: "string", format: "uuid" },
+      rating: { type: "integer", minimum: 1, maximum: 5 },
+      reviewText: { type: "string", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+  },
+  categories: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      name: { type: "string" },
+      slug: { type: "string" },
+      parentCategoryId: { type: "string", format: "uuid", nullable: true, description: "Null for a top-level department; set for a subcategory." },
+    },
+  },
+  brands: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      name: { type: "string" },
+    },
+  },
+  suppliers: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      name: { type: "string" },
+      country: { type: "string" },
+      leadTimeDays: { type: "integer" },
+    },
+  },
+  products: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      sku: { type: "string" },
+      name: { type: "string" },
+      categoryId: { type: "string", format: "uuid" },
+      brandId: { type: "string", format: "uuid" },
+      supplierId: { type: "string", format: "uuid" },
+      basePrice: { type: "number" },
+      currency: { type: "string" },
+      variants: { type: "array", items: { $ref: "#/components/schemas/ProductVariant" } },
+    },
+  },
   users: {
     type: "object",
     properties: {
@@ -57,6 +184,7 @@ const RESOURCE_SCHEMAS: Record<string, object> = {
       shippingAddress: { $ref: "#/components/schemas/Address", nullable: true },
       status: { type: "string", enum: ["processing", "shipped", "delivered"] },
       anomaly: { $ref: "#/components/schemas/AnomalyTag", nullable: true },
+      fraud: { $ref: "#/components/schemas/FraudTag", nullable: true },
     },
   },
   shipments: {
@@ -133,6 +261,24 @@ const SHARED_SCHEMAS = {
       note: { type: "string" },
     },
   },
+  FraudTag: {
+    type: "object",
+    properties: {
+      fraudType: {
+        type: "string",
+        enum: [
+          "stolen_card",
+          "account_farming",
+          "reseller_behavior",
+          "refund_abuse",
+          "friendly_chargeback",
+          "coupon_abuse_ring",
+        ],
+      },
+      riskScore: { type: "integer", minimum: 0, maximum: 100 },
+      signals: { type: "array", items: { type: "string" } },
+    },
+  },
   Pagination: {
     type: "object",
     properties: {
@@ -140,6 +286,16 @@ const SHARED_SCHEMAS = {
       pageSize: { type: "integer" },
       total: { type: "integer" },
       totalPages: { type: "integer" },
+    },
+  },
+  ProductVariant: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      sku: { type: "string" },
+      attributes: { type: "object", additionalProperties: { type: "string" }, description: "e.g. { storage: '512GB', color: 'Space Gray' } -- shape varies per product." },
+      priceDelta: { type: "number" },
+      stockLevel: { type: "integer" },
     },
   },
 };
