@@ -8,7 +8,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "my-eco-gen": "./dist/cli.js"
+    "my-eco-gen": "dist/cli.js"
   },
   "repository": {
     "type": "git",
