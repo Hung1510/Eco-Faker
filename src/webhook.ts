@@ -93,15 +93,18 @@ export interface ReplayOptions {
 }
 
 /**
- * Replay a chronological event list at a compressed pace, calling `onEvent`
- * for each one and waiting the (speed-scaled, capped) real-time gap between
- * consecutive events in between. `onEvent` is awaited, so a slow POST
+ * Replay a chronological list at a compressed pace, calling `onEvent` for
+ * each item and waiting the (speed-scaled, capped) real-time gap between
+ * consecutive items in between. `onEvent` is awaited, so a slow send
  * naturally throttles the replay instead of racing ahead of the receiver.
+ * Generic over anything with a `type`/`timestamp` shape -- the webhook
+ * simulator and the `mail` command's SMTP replay both use this same
+ * pacing loop rather than each maintaining their own.
  */
-export async function replayEvents(
-  events: WebhookEvent[],
+export async function replayEvents<T extends { type: string; timestamp: string }>(
+  events: T[],
   options: ReplayOptions,
-  onEvent: (event: WebhookEvent, index: number, total: number) => Promise<void> | void
+  onEvent: (event: T, index: number, total: number) => Promise<void> | void
 ): Promise<number> {
   const filtered = options.eventTypes ? events.filter((e) => options.eventTypes!.has(e.type)) : events;
   const limited = options.limit ? filtered.slice(0, options.limit) : filtered;

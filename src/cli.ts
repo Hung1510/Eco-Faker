@@ -8,6 +8,7 @@ import { createMockApiServer } from "./serve.js";
 import { buildPostmanCollection } from "./postman.js";
 import { attachLiveFeed } from "./live.js";
 import { buildWebhookEvents, replayEvents } from "./webhook.js";
+import { buildMailReplayItems, replayMail, startMailServer } from "./mail.js";
 import { diffDatasets, formatDiffReport, loadDatasetLike } from "./diff.js";
 import { serialize, type OutputFormat } from "./output/index.js";
 import { parsePrismaSchema } from "./introspect/prisma.js";
@@ -530,6 +531,85 @@ addCoreGenerateOptions(
         ? `Dry run complete: ${total} events.`
         : `Done: ${total} events replayed, ${posted} succeeded, ${failed} failed.`
     );
+  });
+
+addCoreGenerateOptions(
+  program
+    .command("mail")
+    .description(
+      "Start a local MailDev inbox (SMTP + web UI) and replay the generated transactional emails into it, paced like `webhook`."
+    )
+)
+  .option("--smtp-port <number>", "MailDev's incoming SMTP port", parseIntArg, 1025)
+  .option("--web-port <number>", "MailDev's web inbox UI port", parseIntArg, 1080)
+  .option("--no-open", "don't auto-open the web inbox in a browser")
+  .option("--from <address>", "sender address on every outgoing message (eco-faker has no real 'from' concept, so this is a synthetic stand-in)", "orders@eco-faker.test")
+  .option("--speed <number>", "simulated seconds of dataset time per real second (higher = faster)", parseFloatArg, 3600)
+  .option("--max-wait-ms <number>", "cap on the real-world wait between any two emails, in ms", parseIntArg, 3000)
+  .option("--email-types <list>", "comma-separated subset of order_confirmation,shipping_notification,delivery_confirmation,cart_abandonment_recovery,return_confirmation (default: all five)")
+  .option("--limit <number>", "stop after N emails", parseIntArg)
+  .action(async (opts) => {
+    const overrides = resolveOverrides(opts);
+    if (overrides.emailMessages?.enabled === false) {
+      console.error("`mail` needs transactional emails enabled -- drop --no-email-messages to use this command.");
+      process.exit(1);
+    }
+    const referenceNow = Date.now();
+
+    console.error("Generating dataset...");
+    const dataset = generate(overrides, referenceNow);
+    const items = buildMailReplayItems(dataset);
+    if (items.length === 0) {
+      console.error("No email messages in this dataset (0 users, or emailMessages produced nothing) -- nothing to replay.");
+      process.exit(1);
+    }
+
+    const smtpPort = opts.smtpPort as number;
+    const webPort = opts.webPort as number;
+    console.error(`Starting MailDev (SMTP :${smtpPort}, web UI :${webPort})...`);
+    const server = await startMailServer({ smtpPort, webPort, open: opts.open !== false }).catch((err: Error) => {
+      console.error(`Failed to start MailDev: ${err.message}`);
+      process.exit(1);
+    });
+    if (!server) return;
+
+    console.log(`Inbox running at ${server.webUrl}`);
+    console.log(`Replaying ${items.length} email(s) at ${opts.speed}x speed, from ${opts.from}...`);
+
+    const emailTypes = opts.emailTypes
+      ? new Set((opts.emailTypes as string).split(",").map((t) => `email.${t.trim()}`))
+      : undefined;
+
+    let sent = 0;
+    let failed = 0;
+    process.on("SIGINT", async () => {
+      console.error(`\nStopping (${sent} sent, ${failed} failed). Ctrl+C again to force quit.`);
+      await server.close();
+      process.exit(0);
+    });
+
+    const total = await replayMail(
+      items,
+      {
+        smtpPort,
+        from: opts.from as string,
+        speed: opts.speed as number,
+        maxWaitMs: opts.maxWaitMs as number,
+        eventTypes: emailTypes,
+        limit: opts.limit as number | undefined,
+      },
+      (item, index, count, error) => {
+        if (error) {
+          failed++;
+          console.error(`[${index + 1}/${count}] ${item.type} -> ${item.to} FAILED: ${error.message}`);
+        } else {
+          sent++;
+          console.error(`[${index + 1}/${count}] ${item.type} -> ${item.to}`);
+        }
+      }
+    );
+
+    console.log(`Done: ${total} email(s) replayed, ${sent} sent, ${failed} failed. Inbox still running at ${server.webUrl} (Ctrl+C to stop).`);
   });
 
 program

@@ -59,21 +59,31 @@
     "commander": "^12.1.0",
     "express": "^5.2.1",
     "js-yaml": "^5.2.1",
+    "maildev": "^2.2.1",
+    "nodemailer": "^9.0.3",
     "ws": "^8.21.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@tanstack/react-query": "^5.101.4",
+    "@testing-library/react": "^16.3.2",
     "@trpc/server": "^11.18.0",
     "@types/express": "^5.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/jsdom": "^28.0.3",
+    "@types/maildev": "^0.0.7",
     "@types/node": "^22.9.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
     "d3": "^7.9.0",
     "esbuild": "^0.28.1",
     "graphql": "^17.0.2",
     "jsdom": "^29.1.1",
     "msw": "^2.15.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
@@ -82,9 +92,11 @@
     "node": ">=18"
   },
   "peerDependencies": {
+    "@tanstack/react-query": "^5.101.4",
     "@trpc/server": "^11.18.0",
     "graphql": "^17.0.2",
-    "msw": "^2.15.0"
+    "msw": "^2.15.0",
+    "react": "^19.2.8"
   },
   "peerDependenciesMeta": {
     "msw": {
@@ -94,6 +106,12 @@
       "optional": true
     },
     "graphql": {
+      "optional": true
+    },
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },
@@ -114,6 +132,10 @@
     "./graphql": {
       "types": "./dist/graphql.d.ts",
       "default": "./dist/graphql.js"
+    },
+    "./react-query": {
+      "types": "./dist/react-query.d.ts",
+      "default": "./dist/react-query.js"
     }
   }
 }

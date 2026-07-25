@@ -35,6 +35,7 @@ docker compose up --build
 - **Inventory simulation** — warehouses, replenishment orders (tied to the same `Supplier.leadTimeDays` the catalog already generates), stockout periods, and warehouse transfers, with low-current-stock products meaningfully more likely to have a recent stockout/replenishment history
 - **Support tickets** — tickets and full threaded conversations, grounded in real delayed shipments, returns, low ratings, and missing addresses, for anyone building or testing NLP systems (ticket classification, sentiment analysis, support chatbots) that need realistic free text
 - **Transactional emails** — five real email types (order confirmation, shipping/delivery notification, return confirmation, cart-abandonment recovery), each grounded in a real timestamp that already exists elsewhere in the dataset, plus much more varied product review text with the real product name interpolated into every review
+- **Local email inbox** (`mail`) — starts a local MailDev SMTP + web inbox and replays every generated transactional email into it over real SMTP, paced like `webhook`, so you can actually read the generated emails in a real client UI
 - **Temporal scenario engine** (`temporal`) — a dataset whose config varies over calendar time within one call (quiet baseline → demand spike → recovery), implemented as merged independent `generate()` calls rather than a core-loop change, so it adds zero new risk to anything else `generate()` produces
 - **OpenTelemetry export** (`otel-export`) — real OTLP/JSON distributed traces (verified against `opentelemetry-proto`'s schema), a multi-service `checkout` trace per order and a `fulfill_shipment` trace per shipment with spans matching its real tracking-event timeline exactly
 - **Interactive relationship explorer** — a second static browser page (client-side only, no server) for drilling through real entity relationships (User → Orders → Shipment/Returns) via clickable columns, instead of the aggregate-stats charts the original static playground shows
@@ -59,6 +60,7 @@ docker compose up --build
 - **MCP server** — `my-eco-gen mcp` exposes generate/query/fuzz/lint/visualize as tools any MCP client (Claude Code, Claude Desktop) can call directly, with datasets kept server-side and referenced by id across calls
 - **tRPC adapter** — `eco-faker/trpc` turns a dataset into a typed tRPC router (one sub-router per table, `list`/`byId` procedures), same filter/sort/paginate semantics as `serve` and the MSW adapter
 - **GraphQL adapter** — `eco-faker/graphql` turns a dataset into an executable GraphQL schema (mountable in graphql-yoga/apollo-server/mercurius), same filter/sort/paginate helpers as the other three adapters
+- **React Query adapter** — `eco-faker/react-query` turns `serve` (or the MSW adapter) into a `{ useList, useById }` TanStack Query hook pair per table, generated generically off the same table list the other adapters share
 - **Semantic fuzzing** — `my-eco-gen fuzz` mutates a dataset with data that's schema-valid but logically impossible (mismatched addresses, inverted prices, time-paradox returns, oversell quantities), finding business-logic bugs schema validation can't catch
 - **Pre-flight lint** — `my-eco-gen lint` checks referential integrity, uniqueness, and financial/temporal consistency offline (or dry-runs real SQL against a real Postgres inside `BEGIN`/`ROLLBACK`)
 - **Webhook event simulator** — replay the dataset as a paced, chronological stream of `order.created`/`cart.abandoned`/`shipment.delivered`-style events POSTed to a URL
@@ -273,6 +275,25 @@ my-eco-gen generate --users 300 --no-email-messages   # disable
 **Deliberately not built as a separate "live chat" table.** The original scope note for this leftover item included "chat messages" alongside emails and reviews -- a live-chat concept would have meant a new table whose content mostly duplicates support tickets' existing pre-sales category (a real customer question about a product they viewed but didn't buy). Building it as its own thing felt like scope for the sake of covering everything rather than real, differentiated value, so it was left out rather than forced in.
 
 Also available through `serve`'s REST API (`/api/email-messages`), the MSW/tRPC/GraphQL adapters, SQL/CSV output, and `lint`'s referential checks -- and queryable via MCP through the existing generic `query_table` tool, same as support tickets.
+
+## Local email inbox (`mail`)
+
+The natural next step after generating email *content*: actually seeing it, in a real email client UI, instead of reading JSON.
+
+```bash
+my-eco-gen mail --users 300
+# Inbox running at http://localhost:1080
+# Replaying 982 email(s) at 3600x speed, from orders@eco-faker.test...
+```
+
+Starts a local [MailDev](https://github.com/maildev/maildev) instance (an SMTP catch-all + web inbox UI, bundled -- nothing extra to install) and replays every `emailMessages` row into it over real SMTP via [nodemailer](https://nodemailer.com/), in chronological order, paced the same way `webhook` paces its replay (`--speed`, `--max-wait-ms`, `--limit` all mean the same thing here). Recipients are each email's real user, resolved off `dataset.users`; the sender address is a synthetic stand-in (`--from`, default `orders@eco-faker.test`) since eco-faker has no real "from" concept of its own.
+
+```bash
+my-eco-gen mail --users 300 --email-types order_confirmation,shipping_notification   # subset of the five types
+my-eco-gen mail --users 300 --smtp-port 1035 --web-port 1090 --no-open               # custom ports, don't auto-open a browser
+```
+
+Requires Node.js 18+ (same as the rest of the CLI). Ctrl+C stops the replay and closes the inbox.
 
 ## Analytics dashboard (`dashboard`)
 
@@ -720,6 +741,32 @@ curl -X POST http://localhost:4000/graphql -H "Content-Type: application/json" \
 ```
 
 `GET /graphql` returns a usage hint (not an error) if you hit it in a browser. Requires the same optional `graphql` package as the standalone adapter above.
+
+## React Query adapter
+
+```bash
+npm install --save-dev @tanstack/react-query react   # peer dependencies, not bundled -- install them yourself
+```
+
+Points a set of [TanStack Query](https://tanstack.com/query) hooks at a running `serve` endpoint (or the MSW adapter's intercepted routes in tests) -- no server round-trip code to write by hand:
+
+```ts
+import { createEcoFakerQueryHooks } from "eco-faker/react-query";
+
+const hooks = createEcoFakerQueryHooks({ baseUrl: "http://localhost:4000/api" });
+
+function OrdersTable() {
+  const { data, isLoading } = hooks.orders.useList({ filters: { status: "delivered" }, sort: "total", order: "desc", pageSize: 20 });
+  // ...
+}
+
+function OrderDetail({ id }: { id?: string }) {
+  const { data: order } = hooks.orders.useById(id); // disabled automatically while id is undefined
+  // ...
+}
+```
+
+One `{ useList, useById }` pair per table, camelCased the same way the tRPC adapter camelCases its router keys (`hooks.abandonedCheckouts`, not `hooks["abandoned-checkouts"]`) -- generated generically off the same table list `serve`, the MSW adapter, and the tRPC adapter share, so a table added to any of those shows up here automatically. `useList` returns `serve`'s exact `{ data, pagination }` body; `useById` returns the raw record (same body `serve` sends -- the `X-Eco-Faker-Meaning` header isn't exposed here, same as any other `fetch`-based consumer). Point `baseUrl` at `serve`'s `/api` mount in dev, or an MSW-mocked equivalent in tests; pass a custom `fetchImpl` for SSR or auth headers.
 
 ## Webhook event simulator
 

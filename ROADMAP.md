@@ -1263,3 +1263,96 @@ With this, the leftovers explicitly flagged along the way during this
 whole extended session are cleared out as far as they're going to be --
 what remains unbuilt (a live-chat table) has a stated reason for staying
 that way rather than an open question.
+
+---
+
+## Shipped: React Query adapter (2026-07-25)
+
+External review of the project (not from ROADMAP.md) flagged several
+gaps. Most turned out not to be gaps: the "TypeORM/Drizzle adapter"
+suggestion is already covered by `init` (schema introspection into
+`mapping.json`) plus `generate --format sql` (ready-to-run INSERT
+statements against that mapping), and the "schema-as-code" suggestion
+is the same feature by another name. `test --contract` is the
+property-based contract testing item already sitting in the intentional
+backlog per an earlier explicit decision -- not re-opened here. Apollo/
+Relay client adapter, mailhog/maildev SMTP replay, funnel-targeted
+scenario composition, and NL-prompt-driven generation are real,
+heavier asks that were left alone this round.
+
+The one genuine, self-contained gap: no client-side data-fetching
+adapter existed alongside the MSW/tRPC/GraphQL server-side adapters.
+Added `eco-faker/react-query`, exporting `createEcoFakerQueryHooks` --
+one `{ useList, useById }` pair per table, generated generically off
+the same `TABLE_ROUTES` the MSW and tRPC adapters already share, so a
+new table shows up here with zero dedicated wiring, the same property
+those two adapters already have. `useList` returns `serve`'s exact
+`{ data, pagination }` body; `useById` returns the raw record, matching
+`serve`'s body over the wire exactly (the `X-Eco-Faker-Meaning` header
+isn't reachable from a plain `fetch`-based hook, so it's simply not
+exposed here, unlike the tRPC adapter which folds it into the payload).
+
+**One real bug, caught by writing the test before assuming the
+implementation was right:** the hooks factory defaulted to `fetch`
+as a plain expression (`options.fetchImpl ?? fetch`), which captures
+whatever `fetch` was bound to once, at the moment
+`createEcoFakerQueryHooks()` is called -- not on every request. In the
+test, that moment was before MSW's `server.listen()` had patched the
+global, so every request silently fell through to a real network call
+and failed. Real consumers hit the identical bug any time they call
+the factory before their own mocking/interception is wired up, which
+is a very ordinary ordering. Fixed by wrapping the fallback in a
+closure (`(...args) => fetch(...args)`) so the global is resolved fresh
+on every call instead of captured once.
+
+6 new tests in `tests/react-query.test.tsx`, exercising the hooks
+against the existing MSW adapter's intercepted routes (a manually
+assembled JSDOM document, rather than switching the whole file to
+vitest's `jsdom` environment, since that environment's own `fetch`
+replacement turned out to be a second, unrelated way to break MSW
+interception -- worth remembering if this pattern gets reused).
+
+---
+
+## Shipped: `mail` -- local email inbox replay (2026-07-25)
+
+The second item picked up from that same external review, after the
+React Query adapter: "add a command that starts a local SMTP server
+(like MailHog or MailDev) and replays your generated emails into it,"
+explicitly flagged as high priority since transactional emails already
+existed as data but had no way to actually be read.
+
+Added `my-eco-gen mail`, backed by a real [MailDev](https://github.com/maildev/maildev)
+instance (bundled as a dependency, not an optional peer -- unlike the
+MSW/tRPC/GraphQL/React-Query adapters, this command has nothing useful
+to do without it) and [nodemailer](https://nodemailer.com/) for the
+actual SMTP delivery. `buildMailReplayItems` resolves each
+`EmailMessage`'s real recipient off `dataset.users` and sorts
+chronologically by `sentAt`; `replayMail` paces delivery through the
+exact same `replayEvents` helper `webhook` already used, generalized
+from `WebhookEvent[]` to any `{ type, timestamp }` shape rather than
+duplicating the pacing loop a second time.
+
+**Two real decisions worth recording, not just the happy path:**
+
+- `npm install maildev` resolves to `3.0.0-rc.1` -- the `latest` dist-tag
+  points at an unreleased rewrite (Node 20+, all-new async/await API),
+  not the stable 2.x line. Shipping a published package with a
+  pre-release dependency, and silently raising this project's own
+  stated `>=18` Node engine floor in the process, would have been a
+  quiet trap for anyone who ran `npm install`. Pinned to `2.2.1`
+  explicitly instead -- the old callback-style API, `>=18.0.0` engine,
+  matching this project's own floor.
+- MailDev's default bind address (IPv6 wildcard) failed outright in
+  this sandbox (`EAFNOSUPPORT`). Rather than treating that as
+  sandbox-only noise, it's a real question for a dev tool: binding to
+  every interface by default isn't the right default for a local
+  inbox regardless of environment. Explicitly bound both the SMTP and
+  web servers to `127.0.0.1`.
+
+4 new tests in `tests/mail.test.ts`: three on `buildMailReplayItems`
+(type namespacing, real-recipient resolution, chronological order) and
+one true end-to-end check -- start a real MailDev instance, replay real
+items through real SMTP, then fetch MailDev's own REST API and assert
+the delivered subject/body/recipient match the generated content
+exactly, not just that the send call didn't throw.
