@@ -92,6 +92,37 @@ jobs:
       - name: multi-store generates N independent stores
         run: node dist/cli.js generate --stores 3 --users 10 --seed 1 --format json --output /tmp/stores.json
 
+      - name: --prompt fails with a clear error (not a crash) when no API key is set
+        run: |
+          unset ANTHROPIC_API_KEY
+          OUTPUT=$(node dist/cli.js generate --prompt "500 users" 2>&1) && EXIT=0 || EXIT=$?
+          echo "$OUTPUT"
+          test "$EXIT" -ne 0
+          echo "$OUTPUT" | grep -q "ANTHROPIC_API_KEY"
+
+      - name: warp shifts every timestamp by exactly N days, values unchanged
+        run: |
+          node dist/cli.js generate --users 50 --seed 42 --format json --output /tmp/warp-base.json --snapshot /tmp/warp.snapshot.json
+          node dist/cli.js warp --snapshot /tmp/warp.snapshot.json --days +30 --output /tmp/warp-forward.json --diff
+          node -e "
+            const base = require('/tmp/warp-base.json');
+            const warped = require('/tmp/warp-forward.json');
+            const a = base.orders[0], b = warped.orders[0];
+            if (a.id !== b.id || a.status !== b.status || a.total !== b.total) throw new Error('warp changed values it should not have');
+            const deltaDays = (new Date(b.createdAt) - new Date(a.createdAt)) / 86400000;
+            if (Math.abs(deltaDays - 30) > 0.001) throw new Error('warp did not shift by exactly 30 days: ' + deltaDays);
+            console.log('warp: values identical, timestamps shifted by exactly 30 days');
+          "
+
+      - name: openapi-export + test --contract round-trip against serve
+        run: |
+          node dist/cli.js openapi-export --users 500 --seed 1 --output /tmp/contract.json
+          node dist/cli.js serve --users 500 --seed 1 --port 4600 --quiet &
+          SERVER_PID=$!
+          sleep 2
+          node dist/cli.js test --url http://localhost:4600 --contract /tmp/contract.json
+          kill $SERVER_PID
+
   mock-api-e2e:
     name: Mock API end-to-end (serve, chaos, auth, openapi, live)
     runs-on: ubuntu-latest

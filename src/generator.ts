@@ -1,4 +1,4 @@
-import { Faker, en, en_GB, es, de, fr, vi } from "@faker-js/faker";
+import { Faker, base, en, en_GB, es, de, fr, vi, type LocaleDefinition } from "@faker-js/faker";
 import { Rng } from "./rng.js";
 import { resolveConfig } from "./config.js";
 import { generateUsers } from "./modules/user/index.js";
@@ -31,20 +31,20 @@ import type {
   User,
 } from "./types.js";
 
-function localeToFakerModule(locale: EcoFakerConfig["locale"]) {
+function localeToFakerModule(locale: EcoFakerConfig["locale"]): LocaleDefinition[] {
   switch (locale) {
     case "en-GB":
-      return en_GB;
+      return [en_GB, en, base];
     case "es-ES":
-      return es;
+      return [es, en, base];
     case "de-DE":
-      return de;
+      return [de, en, base];
     case "fr-FR":
-      return fr;
+      return [fr, en, base];
     case "vi-VN":
-      return vi;
+      return [vi, en, base];
     default:
-      return en;
+      return [en, base];
   }
 }
 

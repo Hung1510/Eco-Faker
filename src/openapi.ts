@@ -1,5 +1,41 @@
 import type { Dataset } from "./types.js";
 
+/**
+ * `{ $ref, nullable: true }` is a common OpenAPI 3.0 shorthand for "this
+ * reference, or null" -- but it isn't valid JSON Schema draft-07: `nullable`
+ * requires a sibling `type` keyword (which a bare `$ref` doesn't have), and
+ * `$ref` siblings are ignored by draft-07 tooling anyway. ajv throws
+ * ("nullable cannot be used without type") the moment a schema using this
+ * shape gets compiled -- Postman/Swagger UI display it fine since they're
+ * lenient about OpenAPI-specific conventions, but any strict-JSON-Schema
+ * consumer (ajv, and by extension `runContractTest`) chokes on it. This is
+ * `oneOf`-based instead: valid draft-07 JSON Schema, and also OpenAPI 3.1's
+ * own recommended replacement for `nullable` (which 3.1 dropped entirely).
+ */
+function nullableRef(ref: string): object {
+  return { oneOf: [{ $ref: ref }, { type: "null" }] };
+}
+
+/**
+ * None of `RESOURCE_SCHEMAS`/`SHARED_SCHEMAS` declare `required` by hand --
+ * doing that manually for every schema drifts the moment a field is added
+ * or renamed and nobody remembers to update a separate list. Deriving it
+ * mechanically from each schema's own `properties` instead means it can
+ * never be out of sync: every property is required unless it's explicitly
+ * marked `nullable: true` or is a `nullableRef` (`oneOf` null-union), on
+ * the same reasoning as the data generator itself -- a field eco-faker
+ * always populates should be asserted as always present in the contract;
+ * a field it sometimes sets to null is the one case where omitting it
+ * from `required` is actually correct, not just permissive.
+ */
+function withRequired(schema: { type?: string; properties?: Record<string, Record<string, unknown>> }): object {
+  if (schema.type !== "object" || !schema.properties) return schema;
+  const required = Object.entries(schema.properties)
+    .filter(([, propSchema]) => !propSchema.nullable && !propSchema.oneOf)
+    .map(([key]) => key);
+  return required.length > 0 ? { ...schema, required } : schema;
+}
+
 const RESOURCE_SCHEMAS: Record<string, object> = {
   "email-messages": {
     type: "object",
@@ -195,7 +231,7 @@ const RESOURCE_SCHEMAS: Record<string, object> = {
       lastActivityDate: { type: "string", format: "date-time" },
       abandonmentTimeoutHours: { type: "number" },
       currency: { type: "string" },
-      anomaly: { $ref: "#/components/schemas/AnomalyTag", nullable: true },
+      anomaly: nullableRef("#/components/schemas/AnomalyTag"),
     },
   },
   "abandoned-checkouts": {
@@ -225,10 +261,10 @@ const RESOURCE_SCHEMAS: Record<string, object> = {
       totalFormatted: { type: "string" },
       currency: { type: "string" },
       createdAt: { type: "string", format: "date-time" },
-      shippingAddress: { $ref: "#/components/schemas/Address", nullable: true },
+      shippingAddress: nullableRef("#/components/schemas/Address"),
       status: { type: "string", enum: ["processing", "shipped", "delivered"] },
-      anomaly: { $ref: "#/components/schemas/AnomalyTag", nullable: true },
-      fraud: { $ref: "#/components/schemas/FraudTag", nullable: true },
+      anomaly: nullableRef("#/components/schemas/AnomalyTag"),
+      fraud: nullableRef("#/components/schemas/FraudTag"),
     },
   },
   shipments: {
@@ -262,7 +298,7 @@ const RESOURCE_SCHEMAS: Record<string, object> = {
       requestedAt: { type: "string", format: "date-time" },
       resolvedAt: { type: "string", format: "date-time", nullable: true },
       csatScore: { type: "integer", nullable: true },
-      anomaly: { $ref: "#/components/schemas/AnomalyTag", nullable: true },
+      anomaly: nullableRef("#/components/schemas/AnomalyTag"),
     },
   },
 };
@@ -414,7 +450,7 @@ export function buildOpenApiSpec(dataset: Dataset, port: number): object {
     openapi: "3.0.3",
     info: {
       title: "eco-faker mock API",
-      version: "0.1.0",
+      version: "0.2.0",
       description:
         "json-server-style mock REST API backed by a generated eco-faker dataset. Data changes every time the server restarts unless you pin --seed.",
     },
@@ -422,8 +458,8 @@ export function buildOpenApiSpec(dataset: Dataset, port: number): object {
     paths,
     components: {
       schemas: {
-        ...SHARED_SCHEMAS,
-        ...Object.fromEntries(Object.entries(RESOURCE_SCHEMAS).map(([route, schema]) => [resourceComponentName(route), schema])),
+        ...Object.fromEntries(Object.entries(SHARED_SCHEMAS).map(([name, schema]) => [name, withRequired(schema)])),
+        ...Object.fromEntries(Object.entries(RESOURCE_SCHEMAS).map(([route, schema]) => [resourceComponentName(route), withRequired(schema)])),
       },
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", description: "Only enforced when the server is started with --api-key" },

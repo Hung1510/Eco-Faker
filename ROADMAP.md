@@ -1356,3 +1356,202 @@ one true end-to-end check -- start a real MailDev instance, replay real
 items through real SMTP, then fetch MailDev's own REST API and assert
 the delivered subject/body/recipient match the generated content
 exactly, not just that the send call didn't throw.
+
+---
+
+## Shipped: Apollo Client adapter, funnel-targeted generation, natural-language generation (2026-07-25)
+
+The remaining three items from that same external review, after the
+React Query adapter and `mail`.
+
+**Apollo Client adapter.** Added `eco-faker/apollo`, exporting
+`createEcoFakerApolloClient(dataset)`. Wraps the same executable schema
+`toGraphQLSchema`/`serve --graphql` already build in Apollo's own
+`SchemaLink` -- the officially-documented SSR/mocking pattern
+(`@apollo/client/link/schema`), not a custom transport reimplementing
+what Apollo already does well. 3 tests, all passing, using a real
+`ApolloClient` + `SchemaLink` against a real generated dataset -- no
+mocking. One thing worth recording: the first version of the byId test
+failed with a cache-normalization error that looked like an Apollo
+Client v4 `InMemoryCache` bug at first glance. It wasn't -- the actual
+field name is `ordersById` (plural table name + `ById`, matching the
+tRPC/GraphQL adapters' own convention), not the singular `orderById` the
+test had guessed. The adapter was correct the whole time; the lesson was
+in the debugging, not the implementation -- isolate with the raw
+`graphql-js` `execute()` call before suspecting the client library.
+
+**Deliberately no Relay adapter** -- written up in the README's Apollo
+section rather than here, since the reasoning is the kind of thing a
+future reader looking at the adapter list needs right there: Relay
+expects `relay-compiler`-generated query artifacts, not raw GraphQL
+documents executed ad hoc, so a hand-rolled Network layer would only
+work with an unusual slice of real Relay usage. Shipping something that
+looks supported but mostly isn't felt worse than not shipping it.
+
+**Funnel-targeted generation.** Added `src/funnel-target.ts` --
+`generateWithTargetFunnel({ target, overrides })`, wired into `generate`
+as `--target-funnel-rate`/`--target-funnel-tolerance`. Binary-searches
+`abandonmentRate` across repeated, ordinary `generate()` calls until the
+dataset's own `computeAnalytics().funnel` (the exact same numbers the
+dashboard reports, not a separate calculation) lands within tolerance of
+the target -- the generation loop itself is never touched, same
+discipline every other post-processing feature here follows, just
+applied to config search instead of a new table. Full writeup of *why*
+`abandonmentRate` is the one real lever (and why `viewed -> added_to_cart`
+isn't targetable without a core-loop change) is in the README and in
+the module's own doc comment, not duplicated here.
+
+An unreachable target (extreme value, tight tolerance, small scale)
+terminates cleanly and reports the closest rate actually found rather
+than silently returning a dataset that misses -- covered by a dedicated
+test asserting `withinTolerance: false` on a target of `1.0`.
+
+**Natural-language generation.** Added `src/nl-generate.ts` --
+`translatePromptToConfig({ prompt })`, wired into `generate` as
+`--prompt`/`--api-key`/`--model`. Calls the Anthropic Messages API
+directly via `fetch` (no SDK dependency -- one well-documented REST
+call didn't justify a new dependency plus its own version churn), sends
+the real `config.schema.json` so there's no separate, driftable copy of
+"what fields exist," and validates every candidate response through
+`resolveConfig` -- the exact same validator a real dataset generation
+uses. An invalid first attempt gets one corrective follow-up turn with
+the *real* validation error before giving up.
+
+Two real bugs, both caught by writing the test before trusting the
+happy path:
+
+- ajv's default `additionalProperties` message doesn't name the
+  offending key ("must NOT have additional properties" -- which one?),
+  which is useless as feedback to hand back to the model on retry. Added
+  a dedicated error formatter (using `error.params.additionalProperty`)
+  specifically for this feedback loop, separate from `resolveConfig`'s
+  general-purpose error message.
+- A test using `vi.fn().mockResolvedValue(response)` across multiple
+  calls failed on the second call with "Body is unusable: Body has
+  already been read" -- a real `Response` body can only be consumed
+  once, and `mockResolvedValue` (vs. `mockResolvedValueOnce`) hands back
+  the identical object every time. Fixed by building a fresh `Response`
+  per call.
+
+8 tests, all using an injected fake `fetch` -- no real API key or
+network call required to verify the parsing/validation/retry logic,
+which is where the actual risk lives.
+
+**One more bug, found by accident while writing the funnel-target
+tests, unrelated to any of the three features above but real and worth
+fixing while it was isolated:** a test using `locale: "en-GB"` threw
+`The locale data for 'person.first_name' are missing in this locale`.
+`localeToFakerModule` was constructing `new Faker({ locale: en_GB })`
+with no fallback chain -- per faker-js's own docs, only the *prebuilt*
+faker instances (`fakerDE`, `fakerFR`, ...) get an automatic English
+fallback; a custom `new Faker({ locale: X })` needs it stated
+explicitly (`[X, en, base]`), or any field that locale's data doesn't
+fully cover throws instead of falling back. This affected every
+non-`en-US` locale (`en-GB`, `es-ES`, `de-DE`, `fr-FR`, `vi-VN`) and
+every command that accepts `--locale`, not just the new funnel-search
+code that happened to surface it. Fixed with the documented
+`[locale, en, base]` fallback chain, plus a new `tests/locale.test.ts`
+running `generate()` end-to-end for all six configured locales -- there
+was no test coverage exercising a non-default locale before this.
+
+CI: added a `cli-e2e` step verifying `--prompt` fails cleanly (not a
+crash) when no `ANTHROPIC_API_KEY` is set -- the one CLI-observable
+behavior of the NL-generate wiring that doesn't require a live API key
+as a CI secret.
+
+---
+
+## Shipped: contract testing (`test --contract`) and time-travel regression (`warp`) (2026-07-25)
+
+The two items that were explicitly on hold -- with the important caveat
+recorded here plainly: this ROADMAP itself scoped full contract testing
+as **multi-week, its own milestone, not a bolt-on**. What shipped today
+is a real, working, honestly-scoped slice of that -- the read-path --
+not the full stateful-scenario-replay vision from that earlier design
+pass. Worth remembering next time this gets picked back up: the
+mutation/multi-step half is still genuinely unbuilt, not just polished
+further.
+
+**Contract testing.** Added `src/contract-test.ts` (`runContractTest`),
+wired into the CLI as `test --url --contract`, plus a small companion
+command `openapi-export` (dump the OpenAPI contract `serve --openapi`
+would expose, without starting a server -- otherwise there was no way
+to get a contract file to test against without spinning one up first).
+Fires real GET requests at a live API for every read operation in an
+OpenAPI 3.0 contract, validates status + body against the declared
+schema (`$ref`-resolved via ajv, formats via `ajv-formats`), and sources
+`{id}` path params from real ids harvested off each resource's own list
+response rather than a fabricated dataset -- which means a server
+returning 404 for an id it just listed gets caught for free, without
+any dedicated "consistency check" logic.
+
+Two real, separate bugs surfaced while building this against eco-faker's
+*own* `openapi-export` output -- not edge cases invented for the test
+suite, the very first real contract this ran against:
+
+- `{ $ref: X, nullable: true }` is common OpenAPI 3.0 shorthand, but
+  it isn't valid JSON Schema draft-07: `nullable` requires a sibling
+  `type` keyword, which a bare `$ref` doesn't have, and `$ref` siblings
+  are ignored by draft-07 tooling anyway. ajv refused to *compile* any
+  schema reachable from one of these (`anomaly`, `shippingAddress`,
+  `fraud` -- five sites total), which is a hard failure, not a
+  warning -- every single contract check failed with the same opaque
+  error until this was traced back to `openapi.ts`. Fixed with a
+  `nullableRef()` helper using `oneOf: [{$ref}, {type: "null"}]`,
+  which is both valid draft-07 and OpenAPI 3.1's own recommended
+  replacement for `nullable` (which 3.1 dropped entirely).
+- Separately: none of `RESOURCE_SCHEMAS`/`SHARED_SCHEMAS` declared
+  `required` fields at all. An empty `{}` response trivially
+  "validated" against almost every resource schema, since JSON Schema's
+  `properties` doesn't imply presence without an explicit `required`
+  list. This wasn't contract-test-specific either -- it made the whole
+  exported OpenAPI contract far weaker than a contract should be, for
+  anyone consuming it, not just this new command. Fixed by deriving
+  `required` mechanically from each schema's own `properties` (every
+  field required unless it's `nullable`/a null-union), so it can never
+  drift out of sync with a hand-maintained list the way a manually
+  authored `required` array would.
+
+Both fixes were verified the same way: rerun the "compliant server"
+test using real generated data across every table, confirm zero
+failures now that the contract itself compiles and actually asserts
+something. 7 tests in `tests/contract-test.test.ts`, including one that
+specifically proves `ajv-formats` is doing real work (a non-UUID `id`
+gets caught), not just silencing the "unknown format" warning it
+otherwise prints.
+
+Manually verified end-to-end, more than once, before trusting it:
+`openapi-export` -> `serve` -> `test --contract` round-trip against a
+real running server (42/42 real HTTP requests passing), plus the
+`--api-key`/`--header` auth path specifically (401s without a header,
+all-pass with the right one -- confirming the byId-id-sourcing chain
+degrades correctly when upstream requests are blocked, rather than
+crashing).
+
+**Time-travel regression.** Added `warp --snapshot --days` to the CLI
+(no new module -- it's a thin, deliberately thin, composition of
+`generate()`, `serialize()`, and the existing `diffDatasets`/
+`formatDiffReport` engine `diff` already uses). Shifts a snapshot's
+`referenceNow` by N days and regenerates -- verified empirically, not
+assumed, that `generate(config, referenceNow)` is fully deterministic
+in both arguments: the warped dataset has identical ids, statuses,
+totals, and relationships to the original, with every date field
+shifted by exactly N days and nothing else differing. `--diff` reuses
+`diffDatasets` to compare the two structurally.
+
+Stated as plainly in the README as here: `--diff` will almost always
+report zero drift right now, because nothing in eco-faker's generation
+logic reads the actual calendar (month, day-of-week, real "today") --
+every date is a pure offset from `referenceNow`. That's not a weak
+result, it's the useful one -- proof the scenario is genuinely
+time-shift-stable -- and `--diff` becomes an active regression guard
+the moment any future feature *does* introduce calendar-dependent
+behavior (a holiday date-range check, a day-of-week rule), catching it
+as real row-count/status-distribution drift instead of passing
+silently. No dedicated unit tests for `warp` itself -- every piece it
+composes (`generate`, `diffDatasets`, snapshot loading) already has its
+own coverage, so the CLI e2e suite (`.github/workflows/ci.yml`) covers
+the composition: a base run vs. its `--days +30` warp, asserting every
+field on `orders[0]` matches except `createdAt`, which must differ by
+exactly 30.0 days -- verified locally before trusting it to CI, same as
+every other e2e step added this session.

@@ -1,6 +1,6 @@
 {
   "name": "eco-faker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stateful, relationally-consistent fake data generator for e-commerce apps: carts, abandoned checkouts, orders, shipments, returns, anomaly injection, and schema-aware SQL/CSV output.",
   "license": "MIT",
   "author": "Hung1510",
@@ -56,6 +56,7 @@
     "@faker-js/faker": "^9.6.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
     "commander": "^12.1.0",
     "express": "^5.2.1",
     "js-yaml": "^5.2.1",
@@ -92,11 +93,13 @@
     "node": ">=18"
   },
   "peerDependencies": {
+    "@apollo/client": "^4.2.8",
     "@tanstack/react-query": "^5.101.4",
     "@trpc/server": "^11.18.0",
     "graphql": "^17.0.2",
     "msw": "^2.15.0",
-    "react": "^19.2.8"
+    "react": "^19.2.8",
+    "rxjs": "^7.8.2"
   },
   "peerDependenciesMeta": {
     "msw": {
@@ -112,6 +115,12 @@
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "@apollo/client": {
+      "optional": true
+    },
+    "rxjs": {
       "optional": true
     }
   },
@@ -136,6 +145,10 @@
     "./react-query": {
       "types": "./dist/react-query.d.ts",
       "default": "./dist/react-query.js"
+    },
+    "./apollo": {
+      "types": "./dist/apollo.d.ts",
+      "default": "./dist/apollo.js"
     }
   }
 }

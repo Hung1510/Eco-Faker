@@ -3,6 +3,9 @@ import { Command } from "commander";
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { generate, generateRecords } from "./generator.js";
+import { buildOpenApiSpec } from "./openapi.js";
+import { runContractTest, type OpenApiDocument } from "./contract-test.js";
+import { generateWithTargetFunnel } from "./funnel-target.js";
 import { generateStores } from "./multi-store.js";
 import { createMockApiServer } from "./serve.js";
 import { buildPostmanCollection } from "./postman.js";
@@ -33,9 +36,10 @@ import { generateWithTemporalProfile, TEMPORAL_PROFILES, type TemporalProfile } 
 import { generateOtelExport } from "./otel.js";
 import { load as loadYaml } from "js-yaml";
 import { main as runMcpServer } from "./mcp.js";
+import { translatePromptToConfig, DEFAULT_NL_MODEL } from "./nl-generate.js";
 import type { EcoFakerConfig, Locale } from "./types.js";
 
-const TOOL_VERSION = "0.1.0";
+const TOOL_VERSION = "0.2.0";
 
 interface Snapshot {
   meta: { tool: "my-eco-gen"; toolVersion: string; createdAt: string; description?: string };
@@ -128,6 +132,59 @@ function resolveOverrides(opts: Record<string, unknown>): Partial<EcoFakerConfig
 }
 
 /**
+ * Same precedence chain as `resolveOverrides`, but layers in config
+ * translated from `--prompt` (if given) between the scenario and the
+ * explicit CLI flags -- so an explicit `--users 500` still wins over
+ * whatever the model inferred, the same way a named scenario's own
+ * defaults already get overridden by explicit flags. Split out as its own
+ * async function rather than making `resolveOverrides` itself async,
+ * since every other command that calls `resolveOverrides` (fuzz, lint,
+ * visualize, webhook, mail, ...) has no use for `--prompt` and stays
+ * synchronous.
+ */
+async function resolveOverridesWithPrompt(opts: Record<string, unknown>): Promise<Partial<EcoFakerConfig>> {
+  if (!opts.prompt) return resolveOverrides(opts);
+
+  const explicitOverrides = buildOverridesFromGenerateOpts(opts);
+  let scenarioFileOverrides: Partial<EcoFakerConfig> | undefined;
+  if (opts.scenarioFile) {
+    try {
+      const composed = composeScenarioFile(path.resolve(process.cwd(), opts.scenarioFile as string), fsScenarioLoader);
+      scenarioFileOverrides = composed.config;
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  }
+  let scenarioOverrides: Partial<EcoFakerConfig> | undefined;
+  if (opts.scenario) {
+    try {
+      scenarioOverrides = resolveScenario(opts.scenario as string);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  }
+
+  console.error(`Asking ${(opts.model as string) ?? DEFAULT_NL_MODEL} to translate --prompt into config overrides...`);
+  let promptOverrides: Partial<EcoFakerConfig>;
+  try {
+    const result = await translatePromptToConfig({
+      prompt: opts.prompt as string,
+      apiKey: opts.apiKey as string | undefined,
+      model: opts.model as string | undefined,
+    });
+    promptOverrides = result.overrides;
+    console.error(`Got: ${JSON.stringify(promptOverrides)} (${result.attempts} attempt${result.attempts === 1 ? "" : "s"})`);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(1);
+  }
+
+  return mergeOverrides(scenarioFileOverrides, scenarioOverrides, promptOverrides, explicitOverrides);
+}
+
+/**
  * Shared by `fuzz`, `lint`, and `visualize`: load a dataset from
  * `--input <path>` (any `generate --format json` output) if given,
  * otherwise generate a fresh one from the usual `addCoreGenerateOptions`
@@ -156,8 +213,20 @@ addCoreGenerateOptions(
   .option("--fraud-rate <number>", "0..1 chance an order is considered for a fraud tag (default: 0, disabled). See README's Fraud simulation section for the six fraud types.", parseFloatArg)
   .option("--fraud-types <list>", "comma-separated subset of: stolen_card,account_farming,reseller_behavior,refund_abuse,friendly_chargeback,coupon_abuse_ring (default: all six)")
   .option("--fraud-seed <number>", "seed for reproducible fraud-tag selection (default: 1)", parseIntArg, 1)
+  .option(
+    "--prompt <text>",
+    "describe the dataset in plain English (e.g. \"500 users, high cart abandonment, lots of returns\") and let Claude translate it into config overrides -- explicit flags below still take precedence over anything the model infers. Requires ANTHROPIC_API_KEY (or --api-key)."
+  )
+  .option("--api-key <key>", "Anthropic API key for --prompt (default: $ANTHROPIC_API_KEY)")
+  .option("--model <model>", `Anthropic model for --prompt (default: ${DEFAULT_NL_MODEL}, or $ECO_FAKER_MODEL)`)
+  .option(
+    "--target-funnel-rate <number>",
+    "0..1 target view->purchase conversion rate -- calibrates abandonmentRate via search to hit it (see README's Funnel-targeted generation section for what this can and can't control)",
+    parseFloatArg
+  )
+  .option("--target-funnel-tolerance <number>", "acceptable distance from --target-funnel-rate before the search stops (default 0.02)", parseFloatArg)
   .action(async (opts) => {
-    const overrides = resolveOverrides(opts);
+    const overrides = await resolveOverridesWithPrompt(opts);
     const referenceNow = Date.now();
 
     if (opts.snapshot) {
@@ -206,7 +275,27 @@ addCoreGenerateOptions(
     }
 
     const start = performance.now();
-    let dataset = generate(overrides, referenceNow);
+    let dataset: ReturnType<typeof generate>;
+    if (opts.targetFunnelRate !== undefined) {
+      console.error(`Calibrating abandonmentRate to hit a ${((opts.targetFunnelRate as number) * 100).toFixed(0)}% view->purchase conversion rate...`);
+      const result = generateWithTargetFunnel({
+        target: opts.targetFunnelRate as number,
+        tolerance: opts.targetFunnelTolerance as number | undefined,
+        overrides,
+        referenceNow,
+      });
+      dataset = result.dataset;
+      console.error(
+        `${result.withinTolerance ? "Hit" : "Closest reachable:"} ${(result.achievedRate * 100).toFixed(1)}% (target ${(result.targetRate * 100).toFixed(1)}%) at abandonmentRate=${result.calibratedAbandonmentRate.toFixed(4)}, ${result.iterations} attempt(s).`
+      );
+      if (!result.withinTolerance) {
+        console.error(
+          `  Note: this target wasn't reachable within tolerance by calibrating abandonmentRate alone at this scale/seed -- using the closest result found.`
+        );
+      }
+    } else {
+      dataset = generate(overrides, referenceNow);
+    }
     let fraudSummary: Record<FraudType, number> | undefined;
     if (opts.fraudRate) {
       const fraudTypes = opts.fraudTypes
@@ -307,6 +396,53 @@ program
     );
     console.log(`  users: ${dataset.users.length}, orders: ${dataset.orders.length}, shipments: ${dataset.shipments.length}`);
     console.log(`Written to ${outputPath} (${format}) -- byte-identical to the original run.`);
+  });
+
+program
+  .command("warp")
+  .description(
+    "Replay a .snapshot.json recipe as if it had been generated --days earlier/later -- same seed, same config, every timestamp shifted by exactly that many days. For regression-testing time-relative logic (SLA/overdue windows, cart abandonment timeouts, ...) against a fixed, reproducible scenario at a different point in wall-clock time."
+  )
+  .requiredOption("--snapshot <path>", "path to a .snapshot.json recipe (from `generate --snapshot`)")
+  .requiredOption("--days <number>", "days to shift forward (+) or backward (-) from the snapshot's original referenceNow", parseFloatArg)
+  .option("-f, --format <format>", "output format: json | sql | csv", "json")
+  .option("-o, --output <path>", "output file path", "./eco-data-warped.json")
+  .option(
+    "--diff",
+    "also print a structural diff (row counts, schema fields, status distributions) between the original and warped datasets -- see README's Time-travel regression section for what this can and can't catch"
+  )
+  .action((opts) => {
+    const snapshotPath = path.resolve(process.cwd(), opts.snapshot);
+    const snapshot = JSON.parse(readFileSync(snapshotPath, "utf-8")) as Snapshot;
+
+    const format = opts.format as OutputFormat;
+    if (!["json", "sql", "csv"].includes(format)) {
+      console.error(`Unsupported format "${opts.format}". Use json, sql, or csv.`);
+      process.exit(1);
+    }
+
+    const dayMs = 24 * 60 * 60 * 1000;
+    const days = opts.days as number;
+    const warpedReferenceNow = snapshot.referenceNow + days * dayMs;
+
+    const warped = generate(snapshot.config, warpedReferenceNow);
+    const serialized = serialize(warped, format);
+
+    const outputPath = path.resolve(process.cwd(), opts.output);
+    mkdirSync(path.dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, serialized, "utf-8");
+
+    console.log(`Warped snapshot from ${snapshotPath} (recorded ${snapshot.meta.createdAt}) by ${days > 0 ? "+" : ""}${days} day(s).`);
+    console.log(`  original referenceNow=${new Date(snapshot.referenceNow).toISOString()}`);
+    console.log(`  warped   referenceNow=${new Date(warpedReferenceNow).toISOString()}`);
+    console.log(`  users: ${warped.users.length}, orders: ${warped.orders.length}, shipments: ${warped.shipments.length}`);
+    console.log(`Written to ${outputPath} (${format})`);
+
+    if (opts.diff) {
+      const original = generate(snapshot.config, snapshot.referenceNow);
+      const report = diffDatasets(original, warped);
+      console.log(`\n${formatDiffReport(report, "original", "warped")}`);
+    }
   });
 
 program
@@ -475,6 +611,24 @@ addCoreGenerateOptions(
     if (opts.live) {
       attachLiveFeed(server, overrides, referenceNow, { intervalMs: opts.liveIntervalMs as number });
     }
+  });
+
+addCoreGenerateOptions(
+  program
+    .command("openapi-export")
+    .description(
+      "Write the OpenAPI 3.0 contract serve --openapi would expose to a file, without starting a server -- the natural input to `test --contract`."
+    )
+)
+  .option("-o, --output <path>", "output file path", "./openapi.json")
+  .option("--port <number>", "port number to record in the contract's `servers` field (cosmetic only -- doesn't start anything)", parseIntArg, 4000)
+  .action((opts) => {
+    const overrides = resolveOverrides(opts);
+    const dataset = generate(overrides, Date.now());
+    const spec = buildOpenApiSpec(dataset, opts.port as number);
+    const outputPath = path.resolve(process.cwd(), opts.output as string);
+    writeFileSync(outputPath, JSON.stringify(spec, null, 2));
+    console.log(`Written to ${outputPath}`);
   });
 
 addCoreGenerateOptions(
@@ -740,6 +894,62 @@ addCoreGenerateOptions(
     if (issues.some((i) => i.severity === "error")) {
       process.exit(1);
     }
+  });
+
+program
+  .command("test")
+  .description(
+    "Fire real GET requests at a live API and assert status codes + response shapes against an OpenAPI 3.0 contract (see `openapi-export` to produce one). Read-path contract testing -- see README's 'Contract testing' section for exactly what this does and doesn't cover."
+  )
+  .requiredOption("--url <url>", "base URL of the live API to test")
+  .requiredOption("--contract <path>", "path to an OpenAPI 3.0 contract file (.json or .yaml/.yml)")
+  .option(
+    "--header <header>",
+    "HTTP header to send with every request, as 'Key: Value' (repeatable)",
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[]
+  )
+  .action(async (opts) => {
+    const contractPath = path.resolve(process.cwd(), opts.contract as string);
+    let contract: OpenApiDocument;
+    try {
+      const raw = readFileSync(contractPath, "utf-8");
+      contract = (contractPath.toLowerCase().endsWith(".json") ? JSON.parse(raw) : loadYaml(raw)) as OpenApiDocument;
+    } catch (err) {
+      console.error(`Couldn't read/parse ${contractPath}: ${(err as Error).message}`);
+      process.exit(1);
+    }
+
+    const headers: Record<string, string> = {};
+    for (const header of opts.header as string[]) {
+      const idx = header.indexOf(":");
+      if (idx === -1) {
+        console.error(`--header "${header}" isn't in 'Key: Value' format.`);
+        process.exit(1);
+      }
+      headers[header.slice(0, idx).trim()] = header.slice(idx + 1).trim();
+    }
+
+    console.error(`Testing ${opts.url} against ${contractPath}...`);
+    const summary = await runContractTest({ baseUrl: opts.url as string, contract, headers });
+
+    for (const result of summary.results) {
+      if (result.ok) {
+        console.log(`ok:   GET ${result.path} -> ${result.statusActual}`);
+        continue;
+      }
+      console.log(`FAIL: GET ${result.path}${result.requestUrl ? ` (${result.requestUrl})` : ""}`);
+      if (result.error) console.log(`      ${result.error}`);
+      if (result.statusActual !== undefined && !result.statusCodesDeclared.includes(String(result.statusActual))) {
+        console.log(`      status ${result.statusActual} not declared in contract (declared: ${result.statusCodesDeclared.join(", ")})`);
+      }
+      for (const schemaError of result.schemaErrors ?? []) {
+        console.log(`      ${schemaError}`);
+      }
+    }
+
+    console.log(`\n${summary.passed} passed, ${summary.failed} failed.`);
+    if (summary.failed > 0) process.exit(1);
   });
 
 addCoreGenerateOptions(

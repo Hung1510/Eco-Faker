@@ -12,7 +12,21 @@ Stateful, relationally-consistent fake-data generator for e-commerce apps. Not j
 Users → Carts → (AbandonedCheckouts | Orders → Shipments → ReturnRequests)
 ```
 
-![eco-faker demo](./docs/demo.gif)
+### Why eco-faker?
+
+Most fake-data generators stop at "here's a random object." eco-faker is built around one idea: **a fake e-commerce dataset should be able to lie to you the same way a real one does** — and then give you the tools to catch it.
+
+- **It's a database, not a pile of JSON.** Every order actually references a real cart, every shipment a real order, every return a real shipment — financials balance, referential integrity holds by construction, and `lint`/`fuzz` exist specifically to *break* that on purpose so you can test what happens when it doesn't.
+- **It's an API, not just a file.** `serve` turns any dataset into a live REST endpoint in one command — with pagination, filtering, chaos testing, auth, and adapters for MSW, tRPC, GraphQL, Apollo Client, and React Query, so the same dataset powers your frontend, your tests, and your demos without three different mocking setups.
+- **It tests real systems, not just itself.** `test --contract` fires real requests at a live API and checks it against an OpenAPI contract. `lint --sql --db-url` dry-runs real SQL against a real Postgres. `warp` replays a fixed scenario at a different point in time to catch logic that silently depends on "today."
+
+If you've ever hand-rolled `faker.js` calls into a seed script and watched the totals not add up, this is the tool that was missing.
+
+<p align="center">
+  <img src="./docs/demo.gif" alt="eco-faker demo: generating a relationally-consistent e-commerce dataset from the CLI" width="800">
+  <br>
+  <sub><a href="https://hung1510.github.io/Eco-Faker/">Live browser demo</a> (no install) · <a href="https://github.com/Hung1510/Eco-Faker">GitHub</a> · <a href="https://www.npmjs.com/package/eco-faker">npm</a></sub>
+</p>
 
 **Try it in 30 seconds:**
 
@@ -43,6 +57,8 @@ docker compose up --build
 - **Benchmark export** (`benchmark-export`) — real Elasticsearch Bulk API NDJSON + inferred index mappings, and ClickHouse DDL (`ENGINE = MergeTree()`, proper ClickHouse types); Postgres and ClickHouse's data payload both reuse the existing SQL/CSV output rather than reimplementing it a second or third time
 - **Event sourcing mode** (`events`) — a comprehensive, chronologically-ordered event stream (`user.created`, `cart.item_added`, `order.created`, `shipment.delivered`, `product.viewed`, ...) across all 18 tables, every event carrying `aggregateId`/`aggregateType` for real event-sourcing replay
 - **Scenario composer** (`--scenario-file`) — author your own reusable scenario as YAML/JSON, inheriting from built-in scenarios and/or other scenario files with cycle detection, validated against the same schema `generate()` itself uses
+- **Funnel-targeted generation** (`--target-funnel-rate`) — binary-searches `abandonmentRate` across real `generate()` calls until the dataset's own view->purchase conversion rate hits your target, instead of guessing a rate and checking afterward
+- **Natural-language generation** (`--prompt`) — describe the dataset in plain English and Claude translates it into config overrides, validated against the real `config.schema.json` with a corrective retry on the first invalid attempt
 - **Shopping carts** — line items, quantities, status (`active` / `abandoned` / `converted`)
 - **Abandoned checkouts** — recovery email timing, coupon offers, recovery outcome
 - **Orders** — financially exact (`subtotal + tax + shipping === total`), locale-aware formatted currency (`totalFormatted`), free-shipping threshold, missing-address edge case
@@ -61,10 +77,13 @@ docker compose up --build
 - **tRPC adapter** — `eco-faker/trpc` turns a dataset into a typed tRPC router (one sub-router per table, `list`/`byId` procedures), same filter/sort/paginate semantics as `serve` and the MSW adapter
 - **GraphQL adapter** — `eco-faker/graphql` turns a dataset into an executable GraphQL schema (mountable in graphql-yoga/apollo-server/mercurius), same filter/sort/paginate helpers as the other three adapters
 - **React Query adapter** — `eco-faker/react-query` turns `serve` (or the MSW adapter) into a `{ useList, useById }` TanStack Query hook pair per table, generated generically off the same table list the other adapters share
+- **Apollo Client adapter** — `eco-faker/apollo` wraps the GraphQL schema in Apollo's own `SchemaLink` for no-network, in-memory query execution -- the officially-documented Apollo SSR/mocking pattern, not a custom transport
 - **Semantic fuzzing** — `my-eco-gen fuzz` mutates a dataset with data that's schema-valid but logically impossible (mismatched addresses, inverted prices, time-paradox returns, oversell quantities), finding business-logic bugs schema validation can't catch
 - **Pre-flight lint** — `my-eco-gen lint` checks referential integrity, uniqueness, and financial/temporal consistency offline (or dry-runs real SQL against a real Postgres inside `BEGIN`/`ROLLBACK`)
+- **Contract testing** — `my-eco-gen test --contract` fires real GET requests at a live API and asserts status codes + response bodies against an OpenAPI 3.0 contract, `$ref`s and formats included; `openapi-export` produces the contract file
 - **Webhook event simulator** — replay the dataset as a paced, chronological stream of `order.created`/`cart.abandoned`/`shipment.delivered`-style events POSTed to a URL
 - **Dataset diffing** — `my-eco-gen diff` reports row-count deltas, schema drift, and status-distribution shifts between two datasets or snapshots
+- **Time-travel regression** — `my-eco-gen warp --snapshot ... --days +30` replays a snapshot with every timestamp shifted by N days, same values otherwise -- for regression-testing time-relative logic against a fixed scenario
 - **Multi-store mode** — `--stores N` generates N independent, distinctly-seeded stores in one call
 - **Interactive web playground** — sliders + live charts + RFM/cohort segmentation + side-by-side scenario comparison, backed by a small Express API
 - **Customer journey timeline** — `my-eco-gen visualize` renders one customer's full lifecycle as a self-contained, animated D3 timeline (works fully offline, no CDN)
@@ -427,6 +446,50 @@ Also available as an MCP tool (`resolve_scenario_file`).
 
 ---
 
+## Funnel-targeted generation (`--target-funnel-rate`)
+
+"Give me 500 users with a 30% view-to-purchase conversion rate" -- instead of guessing an `abandonmentRate` and checking the dashboard afterward:
+
+```bash
+my-eco-gen generate --users 500 --target-funnel-rate 0.3
+# Calibrating abandonmentRate to hit a 30% view->purchase conversion rate...
+# Hit 30.4% (target 30.0%) at abandonmentRate=0.7188, 5 attempt(s).
+```
+
+Binary-searches `abandonmentRate` across repeated ordinary `generate()` calls until the resulting dataset's own `viewed -> purchased` conversion rate (the same numbers the analytics dashboard's funnel reports) lands within `--target-funnel-tolerance` (default 0.02, i.e. +/-2 points) of the target -- never touching the generation loop itself, the same "stay outside core generation" discipline every post-processing feature in this project follows, just applied to config search instead of a new table.
+
+**Why `abandonmentRate` specifically, and why only `viewed -> purchased`.** With `cartsPerUser.min` defaulting to (and realistically always being) >= 1, every user who gets a product view also gets at least one cart -- so `viewed` and `added_to_cart` are already ~100% of each other by construction, and there's no existing knob that makes a user view products without ever starting a cart. Adding one would mean reworking cart creation itself, a core-loop change this project deliberately avoids. `abandonmentRate` is what actually moves `checkout_started -> purchased`, so it's the one real lever available for shaping the overall conversion rate without crossing that line. The relationship isn't linear -- a user with multiple carts purchases if *any* one of them converts, so the achieved rate at a given `abandonmentRate` is higher than `1 - abandonmentRate` -- which is exactly why this searches for the right value empirically (via real `generate()` + `computeAnalytics()` calls) instead of computing it from a formula.
+
+If a target isn't reachable within tolerance at the requested scale/seed (e.g. `--target-funnel-rate 0.99` on a small dataset), the search still terminates and reports the closest rate it actually found, plainly, rather than silently returning a dataset that misses the target:
+
+```bash
+my-eco-gen generate --users 50 --target-funnel-rate 1.0 --target-funnel-tolerance 0.001
+# Closest reachable: 98.0% (target 100.0%) at abandonmentRate=0.0313, 14 attempt(s).
+#   Note: this target wasn't reachable within tolerance by calibrating abandonmentRate alone at this scale/seed -- using the closest result found.
+```
+
+## Natural-language generation (`--prompt`)
+
+Describe the dataset in plain English and let Claude fill in the config:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+my-eco-gen generate --prompt "500 users, high cart abandonment, lots of returns, holiday scenario"
+# Asking claude-sonnet-4-5 to translate --prompt into config overrides...
+# Got: {"scaleFactor":500,"abandonmentRate":0.6,"returnRate":0.25} (1 attempt)
+```
+
+Sends the prompt plus the real `config.schema.json` (the exact schema `resolveConfig` validates every dataset against -- no separate, driftable copy of "what fields exist" for the model to work from) to the Anthropic Messages API, and validates the response through that same validator before accepting it. An invalid first attempt -- an unrecognized key, a typo, a value out of range -- gets one corrective follow-up turn carrying the real validation error (which key, which constraint), not a generic "try again," before giving up. Explicit flags still win: `--prompt "..." --users 1000` keeps 1000 regardless of what the model inferred, the same way a named `--scenario`'s defaults get overridden by explicit flags.
+
+```bash
+my-eco-gen generate --prompt "..." --api-key sk-ant-...   # instead of $ANTHROPIC_API_KEY
+my-eco-gen generate --prompt "..." --model claude-opus-4-5   # override the default model
+```
+
+Requires `ANTHROPIC_API_KEY` (or `--api-key`) -- fails with a clear message, before making any network call, if neither is set. The default model is a dateless convenience alias (`claude-sonnet-4-5` as of this writing) that Anthropic resolves to the current model in that line; override via `--model` or `$ECO_FAKER_MODEL` since model names change over time and any hardcoded default will eventually go stale -- see [Anthropic's models overview](https://docs.claude.com/en/docs/about-claude/models/overview) for the current list.
+
+---
+
 ## Temporal scenario engine (`temporal`)
 
 A single dataset whose config effectively varies over calendar time -- a quiet baseline, a demand spike, a slow recovery, all in one merged dataset, instead of one flat config for the whole history window.
@@ -768,6 +831,33 @@ function OrderDetail({ id }: { id?: string }) {
 
 One `{ useList, useById }` pair per table, camelCased the same way the tRPC adapter camelCases its router keys (`hooks.abandonedCheckouts`, not `hooks["abandoned-checkouts"]`) -- generated generically off the same table list `serve`, the MSW adapter, and the tRPC adapter share, so a table added to any of those shows up here automatically. `useList` returns `serve`'s exact `{ data, pagination }` body; `useById` returns the raw record (same body `serve` sends -- the `X-Eco-Faker-Meaning` header isn't exposed here, same as any other `fetch`-based consumer). Point `baseUrl` at `serve`'s `/api` mount in dev, or an MSW-mocked equivalent in tests; pass a custom `fetchImpl` for SSR or auth headers.
 
+## Apollo Client adapter
+
+```bash
+npm install --save-dev @apollo/client rxjs   # peer dependencies, not bundled -- install them yourself
+```
+
+Wraps the same executable schema the standalone GraphQL adapter and `serve --graphql` already build in Apollo's own `SchemaLink` -- an `ApolloClient` instance that executes queries directly against the in-memory dataset, no server, no network hop, nothing to keep in sync:
+
+```ts
+import { generate } from "eco-faker";
+import { createEcoFakerApolloClient } from "eco-faker/apollo";
+import { gql, useQuery } from "@apollo/client";
+
+const client = createEcoFakerApolloClient(generate({ seed: 1, scenario: "black-friday" }));
+
+function OrdersTable() {
+  const { data } = useQuery(gql`
+    query { orders(filters: { status: "delivered" }, pageSize: 10) { data pagination { total } meaning } }
+  `, { client });
+  // ...
+}
+```
+
+`createEcoFakerApolloClient` is the officially-documented Apollo SSR/mocking pattern (`@apollo/client/link/schema`), not a custom transport -- so `useQuery`/`useMutation`/`client.query()` all behave exactly like they would against a real HTTP endpoint. Every field the GraphQL adapter exposes works unmodified: `<table>(filters, sort, order, page, pageSize)`, `<table>ById(id)` (note: plural table name, e.g. `ordersById` not `orderById`), and `info`.
+
+**Deliberately no Relay adapter.** Relay's own client machinery expects queries pre-compiled by `relay-compiler` into normalized artifacts, not raw GraphQL documents executed ad hoc -- a hand-rolled `Network.create(fetchFn)` here would only work with the small, unusual slice of Relay usage that skips the compiler, which is not how real Relay apps are built. Building something that only half-works and calling it a Relay adapter felt like it would mislead more than help, so this was left out rather than shipped in a state that looks supported but mostly isn't.
+
 ## Webhook event simulator
 
 Replay the dataset as a paced, chronological stream of webhook events -- exactly what a Stripe/Shopify-style webhook consumer needs to test against:
@@ -888,6 +978,30 @@ my-eco-gen lint --sql ./seed.sql --db-url postgres://user:pass@localhost:5432/st
 ```
 
 This runs the SQL inside `BEGIN; ...; ROLLBACK;` against the real database -- nothing is ever committed. Requires the optional `pg` package (`npm install pg`) and a reachable Postgres instance; unlike the offline checks above, this mode needs a live database and isn't exercised by eco-faker's own test suite for that reason.
+
+## Contract testing (`test --contract`)
+
+`lint`'s SQL dry-run validates a seed file against a real database. `test --contract` is the read-path equivalent for a real HTTP API: it fires actual GET requests at a live server and asserts both status codes and response bodies against an OpenAPI 3.0 contract.
+
+```bash
+# Capture a contract -- your own API, or eco-faker's own mock API as a reference shape:
+my-eco-gen openapi-export --users 200 --output ./contract.json
+
+# ...then point `test` at whatever should be implementing that contract:
+my-eco-gen test --url https://api.example.com --contract ./contract.json
+# ok:   GET /api/orders -> 200
+# ok:   GET /api/orders/{id} -> 200
+# FAIL: GET /api/returns/{id} (https://api.example.com/api/returns/abc-123)
+#       /total must be number
+#
+# 41 passed, 1 failed.
+```
+
+Every GET operation in the contract gets a real request: list endpoints first, then `{id}` endpoints -- using a real id harvested from that resource's own list response, not a fabricated one, so a server that 404s on an id it just listed is caught automatically. Response bodies are validated against the contract's declared JSON Schema for whatever status actually came back, `$ref`s and all, with `ajv-formats` wired in so `format: uuid`/`date-time`/`email` are genuinely checked, not just accepted. `--header "Authorization: Bearer ..."` (repeatable) sends auth headers with every request.
+
+**Scope, stated plainly.** This is the read-path slice of contract testing -- GET operations only, since that's all an OpenAPI contract generated from `serve` (itself read-only) ever declares. It does not fire mutations, replay a stateful multi-step scenario (add to cart -> checkout -> pay -> ship), or assert cross-request state consistency beyond the one check that comes free from sourcing byId ids off real list responses. The full stateful-scenario-replay vision -- described in an earlier design pass as genuinely multi-week scope, not a bolt-on -- remains a larger, separate undertaking; this is a real, working slice of it, not the whole thing dressed up to look complete.
+
+Two schema-quality bugs surfaced (and were fixed) while building this against eco-faker's own `openapi-export` output, both real regardless of `test --contract`'s existence: `{ $ref, nullable: true }` is common OpenAPI 3.0 shorthand but isn't valid JSON Schema (`nullable` needs a sibling `type`, and `$ref` siblings are ignored anyway) -- ajv refused to compile any schema reaching one, fixed with an `oneOf`-null-union instead. And none of the resource schemas declared `required` fields at all, so an empty `{}` trivially "validated" against almost every resource -- fixed by deriving `required` automatically from each schema's own properties (excluding nullable ones), so it can never drift out of sync with a hand-maintained list.
 
 ## Multi-store / multi-tenant mode
 
@@ -1137,6 +1251,29 @@ diff ./run1.json ./replay.json   # byte-identical, guaranteed
 
 `bug-42.snapshot.json` is a few lines of JSON (`seed`, resolved config overrides, `referenceNow`) -- lightweight enough to commit alongside a failing test case, so "user 42's cart abandoned at exactly 2:31pm" becomes a one-line fixture instead of a multi-megabyte data dump.
 
+## Time-travel regression (`warp`)
+
+`replay` reproduces a snapshot exactly, byte-for-byte. `warp` reproduces it *shifted in time* -- same seed, same config, same every value, but every timestamp moved forward or backward by however many days you ask for:
+
+```bash
+my-eco-gen warp --snapshot ./bug-42.snapshot.json --days +30 --diff
+# Warped snapshot from ./bug-42.snapshot.json (recorded 2026-07-25T...) by +30 day(s).
+#   original referenceNow=2026-07-25T...
+#   warped   referenceNow=2026-08-24T...
+#   users: 50, orders: 76, shipments: 80
+# Written to ./eco-data-warped.json (json)
+#
+# Row counts (original -> warped):
+#   users                    50 -> 50     (+0, +0.0%)
+#   ...
+```
+
+`generate(config, referenceNow)` is fully deterministic in both arguments -- shifting `referenceNow` by N days reproduces the *exact same* dataset (same ids, same statuses, same totals, same relationships), with every date field shifted by exactly N days and nothing else changing. This is verified directly, not assumed: a CI step diffs `orders[0]` between a base run and its `--days +30` warp and asserts every field matches except `createdAt`, which must differ by exactly 30.0 days.
+
+**What this is actually for:** testing time-relative logic (an "is this shipment overdue" check, an SLA window, a cart-abandonment timeout) against a fixed, reproducible scenario at a different point in wall-clock time -- without eco-faker itself ever needing to know what your downstream system's overdue logic looks like. Point the same bug-report snapshot at your system today, then again after `--days +90`, and see whether it still behaves the way you expect.
+
+`--diff` reuses the exact same structural-diff engine `my-eco-gen diff` uses (row counts, schema field drift, status distributions) to compare the original and warped datasets -- **stated plainly: in the current codebase, this will almost always report zero drift**, because nothing in eco-faker's generation logic depends on the actual calendar (month, day-of-week, real "today") -- every date is computed purely as an offset from `referenceNow`, never from `Date.now()` or calendar arithmetic. Zero drift is itself the useful signal here (it's proof this scenario really is time-shift-stable), and `--diff` becomes actively valuable as a regression guard the moment any future feature *does* introduce calendar-dependent behavior (a holiday-date-range check, a day-of-week discount rule, ...) -- it would show up here immediately as real row-count or status-distribution drift instead of silently passing.
+
 ---
 
 ## Docker: seed a real Postgres database in one command
@@ -1346,6 +1483,14 @@ The `records/sec` and `relational integrity` badges above read live from [`bench
 npm run build && npm run benchmark
 ```
 
+## Showcase
+
+Nothing listed yet — this is a genuinely new section. If you've built something with eco-faker (a demo, a seed script, a talk, a blog post), open a PR adding it here:
+
+| Project | What it uses eco-faker for | Link |
+| --- | --- | --- |
+| _yours here_ | | |
+
 ## Roadmap
 
-See [ROADMAP.md](./ROADMAP.md) for what's next: an MSW adapter, a framework scaffolding CLI (`npx eco-faker init`), property-based contract testing against live APIs, and the content/promotion plan tying it together.
+See [ROADMAP.md](./ROADMAP.md) for what's next: a framework scaffolding CLI (`npx eco-faker init` for Next.js/Prisma/Drizzle/MSW), the stateful mutation-replay half of contract testing (fires real writes, not just reads, at a live API), and the content/promotion plan tying it together.
