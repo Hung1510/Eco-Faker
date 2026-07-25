@@ -84,4 +84,49 @@ describe("timeline realism", () => {
       }
     }
   });
+
+  describe("no timestamp anywhere in the dataset is ever in the future (regression)", () => {
+    // The above test only ever checked shipment.events -- a narrower
+    // scope than its own name promised. That gap is exactly why a real
+    // bug (order.createdAt could land up to 30 minutes in the future
+    // when a converting cart's lastActivityDate was close to
+    // referenceNow -- see modules/order/index.ts) went undetected across
+    // many prior rounds of work in this project. This block checks every
+    // timestamp field on every table explicitly, with a fixed
+    // referenceNow rather than a fresh Date.now() call after generation,
+    // so the check is exact rather than merely "probably fine because
+    // some time passed since generation."
+    const referenceNow = Date.parse("2026-07-19T12:00:00.000Z");
+    const fullDataset = generate({ seed: 7, scaleFactor: 300, historicalDays: 90, delayProbability: 0.4 }, referenceNow);
+
+    it("orders.createdAt", () => {
+      for (const o of fullDataset.orders) expect(Date.parse(o.createdAt)).toBeLessThanOrEqual(referenceNow);
+    });
+    it("carts.createdAt and lastActivityDate", () => {
+      for (const c of fullDataset.carts) {
+        expect(Date.parse(c.createdAt)).toBeLessThanOrEqual(referenceNow);
+        expect(Date.parse(c.lastActivityDate)).toBeLessThanOrEqual(referenceNow);
+      }
+    });
+    it("abandonedCheckouts.exitTimestamp and recoveryEmailSentAt", () => {
+      for (const c of fullDataset.abandonedCheckouts) {
+        expect(Date.parse(c.exitTimestamp)).toBeLessThanOrEqual(referenceNow);
+        if (c.recoveryEmailSentAt) expect(Date.parse(c.recoveryEmailSentAt)).toBeLessThanOrEqual(referenceNow);
+      }
+    });
+    it("shipments.events[].timestamp", () => {
+      for (const s of fullDataset.shipments) {
+        for (const e of s.events) expect(Date.parse(e.timestamp)).toBeLessThanOrEqual(referenceNow);
+      }
+    });
+    it("returnRequests.requestedAt and resolvedAt", () => {
+      for (const r of fullDataset.returnRequests) {
+        expect(Date.parse(r.requestedAt)).toBeLessThanOrEqual(referenceNow);
+        if (r.resolvedAt) expect(Date.parse(r.resolvedAt)).toBeLessThanOrEqual(referenceNow);
+      }
+    });
+    it("users.createdAt", () => {
+      for (const u of fullDataset.users) expect(Date.parse(u.createdAt)).toBeLessThanOrEqual(referenceNow);
+    });
+  });
 });

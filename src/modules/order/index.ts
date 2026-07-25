@@ -15,7 +15,8 @@ export function convertCartToOrder(
   rng: Rng,
   config: EcoFakerConfig,
   cart: Cart,
-  user: User
+  user: User,
+  referenceNow: number
 ): Order {
   const subtotal = Math.round(cart.items.reduce((sum, item) => sum + item.lineTotal, 0) * 100) / 100;
   const tax = Math.round(subtotal * config.taxRate * 100) / 100;
@@ -26,9 +27,17 @@ export function convertCartToOrder(
   const missingAddress = rng.chance(config.missingAddressRate);
   const shippingAddress: Address | null = missingAddress ? null : generateAddress(faker);
 
-  // Order is created shortly after the cart's last activity (checkout flow).
+  // Order is created shortly after the cart's last activity (checkout
+  // flow) -- but a converting cart's own lastActivityDate can legitimately
+  // be as recent as referenceNow itself (see cart/index.ts), so adding
+  // 1-30 minutes on top of it without a clamp could push createdAt past
+  // referenceNow into the future. A real, pre-existing bug (predates this
+  // session's work, latent in the foundational generate() path this
+  // entire project builds on) -- caught by the temporal engine's strict
+  // cross-segment timestamp-boundary check, then confirmed to affect
+  // plain, non-temporal generate() too across multiple seeds.
   const createdAt = new Date(
-    new Date(cart.lastActivityDate).getTime() + rng.int(1, 30) * 60 * 1000
+    Math.min(new Date(cart.lastActivityDate).getTime() + rng.int(1, 30) * 60 * 1000, referenceNow)
   );
 
   const totalFormatted = new Intl.NumberFormat(config.locale, {

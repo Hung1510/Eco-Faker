@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>eco-faker -- relationship explorer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel2: #12141a;
+    --border: #2a2e38;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --accent: #6ee7b7;
+    --accent2: #f59e0b;
+    --danger: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header { padding: 24px 32px 8px; display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  header a { color: var(--accent); }
+  .toolbar { display: flex; align-items: center; gap: 10px; }
+  .toolbar input[type="search"] {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 10px; font-size: 13px; width: 220px;
+  }
+  .toolbar select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 10px; font-size: 13px;
+  }
+  .toolbar button {
+    background: var(--accent); color: #0f1115; border: none; border-radius: 6px;
+    padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .toolbar button:hover { filter: brightness(1.08); }
+  .status { color: var(--muted); font-size: 12px; padding: 0 32px 12px; }
+
+  .breadcrumb { padding: 0 32px 14px; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .breadcrumb .crumb { color: var(--text); }
+  .breadcrumb .sep { color: var(--border); }
+
+  .columns { display: grid; grid-template-columns: 260px 1fr 1fr 1fr; gap: 1px; background: var(--border); margin: 0 32px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; min-height: 60vh; }
+  .column { background: var(--panel); display: flex; flex-direction: column; min-width: 0; }
+  .column-head { padding: 12px 14px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+  .column-body { overflow-y: auto; max-height: 60vh; flex: 1; }
+  .row {
+    padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px;
+    border-left: 3px solid transparent; position: relative;
+  }
+  .row:hover { background: rgba(110, 231, 183, 0.06); }
+  .row.selected { background: rgba(110, 231, 183, 0.1); border-left-color: var(--accent); }
+  .row .title { font-weight: 600; margin-bottom: 2px; }
+  .row .sub { color: var(--muted); font-size: 11.5px; }
+  .row .chevron { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 12px; }
+  .row.leaf .chevron { display: none; }
+  .empty-hint { padding: 24px 16px; color: var(--muted); font-size: 12.5px; text-align: center; }
+
+  .badge { display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; margin-left: 6px; border: 1px solid var(--border); }
+  .badge.ok { color: var(--accent); border-color: rgba(110,231,183,0.4); background: rgba(110,231,183,0.08); }
+  .badge.warn { color: var(--accent2); border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.08); }
+  .badge.bad { color: var(--danger); border-color: rgba(248,113,113,0.4); background: rgba(248,113,113,0.08); }
+
+  .detail-panel { margin: 20px 32px 40px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px 24px; }
+  .detail-panel h2 { margin: 0 0 4px; font-size: 16px; }
+  .detail-panel .detail-sub { color: var(--muted); font-size: 12.5px; margin-bottom: 16px; }
+  .kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px 20px; margin-bottom: 18px; }
+  .kv { }
+  .kv .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .kv .v { font-size: 13.5px; margin-top: 2px; }
+  .timeline { border-left: 2px solid var(--border); margin-left: 6px; padding-left: 18px; }
+  .timeline-item { position: relative; padding-bottom: 16px; }
+  .timeline-item:last-child { padding-bottom: 0; }
+  .timeline-item::before { content: ""; position: absolute; left: -23px; top: 3px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); border: 2px solid var(--panel); }
+  .timeline-item .t-status { font-weight: 600; font-size: 13.5px; }
+  .timeline-item .t-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .placeholder { color: var(--muted); font-size: 13px; }
+  .items-list { font-size: 13px; margin-top: 4px; }
+  .items-list div { padding: 3px 0; }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>eco-faker -- relationship explorer</h1>
+      <p>Click through a generated dataset's real relationships -- User &rarr; Orders &rarr; Shipment / Returns. Runs entirely in your browser. <a href="https://github.com/Hung1510/Eco-Faker">Source</a> &middot; <a href="./index.html">Aggregate stats playground</a></p>
+    </div>
+    <div class="toolbar">
+      <select id="scenario"></select>
+      <button id="regen">Generate new dataset</button>
+    </div>
+  </header>
+  <div class="status" id="status"></div>
+
+  <div class="breadcrumb" id="breadcrumb"></div>
+
+  <div class="columns">
+    <div class="column">
+      <div class="column-head">Users</div>
+      <div class="column-body">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);">
+          <input type="search" id="userSearch" placeholder="Filter by name or email" style="width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12.5px;" />
+        </div>
+        <div id="col-users"></div>
+      </div>
+    </div>
+    <div class="column">
+      <div class="column-head">Orders</div>
+      <div class="column-body" id="col-orders"><div class="empty-hint">Select a user to see their orders.</div></div>
+    </div>
+    <div class="column">
+      <div class="column-head">Shipments</div>
+      <div class="column-body" id="col-shipments"><div class="empty-hint">Select an order to see its shipment(s).</div></div>
+    </div>
+    <div class="column">
+      <div class="column-head">Return requests</div>
+      <div class="column-body" id="col-returns"><div class="empty-hint">Select an order to see any return request.</div></div>
+    </div>
+  </div>
+
+  <div class="detail-panel" id="detail">
+    <div class="placeholder">Select a shipment or return request above for full tracking / return details.</div>
+  </div>
+
+  <script src="./dist/explorer-bundle.js"></script>
+</body>
+</html>

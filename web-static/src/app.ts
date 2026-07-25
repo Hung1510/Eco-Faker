@@ -30,8 +30,15 @@ for (const name of Object.keys(SCENARIOS)) {
 const customOption = document.createElement("option");
 customOption.value = "";
 customOption.textContent = "custom (sliders below)";
-customOption.selected = true;
 scenarioSelect.insertBefore(customOption, scenarioSelect.firstChild);
+// Setting .selected = true before an option is attached to its <select>
+// doesn't reliably survive insertion -- explicitly forcing .value after
+// every option exists is the reliable way to select it. Real bug: this
+// page's dropdown was silently showing "black-friday" selected on load
+// instead of "custom (sliders below)," undetected because this file's
+// own smoke test's hand-rolled fake DOM never implemented real <select>
+// selection semantics to catch it.
+scenarioSelect.value = "";
 
 function currentOverrides() {
   const scenario = scenarioSelect.value ? SCENARIOS[scenarioSelect.value as keyof typeof SCENARIOS] : {};

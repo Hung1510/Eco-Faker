@@ -172,5 +172,47 @@ export const configSchemaObject = {
       },
       default: { enabled: true, botCartRate: 0.02, remoteShippingRate: 0.05, contradictoryReturnRate: 0.01 },
     },
+    catalogSize: {
+      type: "integer",
+      description: "How many products to generate in the shared catalog that carts/orders draw line items from.",
+      minimum: 1,
+      default: 150,
+    },
+    recommendationData: {
+      type: "object",
+      description: "Product views, search queries, wishlist items, and post-purchase ratings -- generated as a post-processing pass with its own decoupled RNG stream.",
+      additionalProperties: false,
+      properties: {
+        enabled: { type: "boolean", description: "Master switch for recommendation-data generation.", default: true },
+      },
+      default: { enabled: true },
+    },
+    inventorySimulation: {
+      type: "object",
+      description: "Replenishment orders, stockout periods, and warehouse transfers -- generated as a post-processing pass with its own decoupled RNG stream.",
+      additionalProperties: false,
+      properties: {
+        enabled: { type: "boolean", description: "Master switch for inventory simulation.", default: true },
+      },
+      default: { enabled: true },
+    },
+    supportTickets: {
+      type: "object",
+      description: "Support tickets and threaded messages, grounded in real delayed shipments/returns/low ratings -- generated as a post-processing pass with its own decoupled RNG stream.",
+      additionalProperties: false,
+      properties: {
+        enabled: { type: "boolean", description: "Master switch for support ticket generation.", default: true },
+      },
+      default: { enabled: true },
+    },
+    emailMessages: {
+      type: "object",
+      description: "Transactional email messages (order confirmation, shipping/delivery notifications, cart-recovery, return confirmation), grounded in real order/shipment/checkout data -- generated as a post-processing pass with its own decoupled RNG stream.",
+      additionalProperties: false,
+      properties: {
+        enabled: { type: "boolean", description: "Master switch for email message generation.", default: true },
+      },
+      default: { enabled: true },
+    },
   },
 } as const;

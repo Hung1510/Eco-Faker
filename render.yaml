@@ -1,0 +1,15 @@
+# Render Blueprint -- https://render.com/docs/blueprint-spec
+# Lets anyone click "Deploy to Render" (see README's "Hosted playground API"
+# section) and get a live, public instance of `serve` running in a couple
+# of minutes, no manual configuration. Render injects $PORT automatically;
+# Dockerfile.serve reads it.
+services:
+  - type: web
+    name: eco-faker-playground
+    runtime: docker
+    dockerfilePath: ./Dockerfile.serve
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: 4000

@@ -6,6 +6,7 @@ import type {
   CartStatus,
   EcoFakerConfig,
   LineItem,
+  Product,
   User,
 } from "../../types.js";
 
@@ -26,13 +27,43 @@ function currencyForLocale(locale: string): string {
   }
 }
 
-export function generateLineItems(faker: Faker, rng: Rng, config: EcoFakerConfig): LineItem[] {
+/**
+ * Picks a real product (and, if it has variants, a real variant) from the
+ * shared catalog for one line item. Falls back to an ad hoc fake product
+ * only if the catalog is empty (e.g. `catalogSize: 0`) -- defensive, not
+ * the normal path.
+ */
+export function pickLineItem(faker: Faker, rng: Rng, products: Product[]): Omit<LineItem, "quantity" | "lineTotal"> {
+  if (products.length === 0) {
+    return {
+      productId: faker.string.uuid(),
+      sku: faker.string.alphanumeric({ length: 8, casing: "upper" }),
+      name: faker.commerce.productName(),
+      unitPrice: Number(faker.commerce.price({ min: 5, max: 300, dec: 2 })),
+    };
+  }
+
+  const product = rng.pick(products);
+  if (product.variants.length === 0) {
+    return { productId: product.id, sku: product.sku, name: product.name, unitPrice: product.basePrice };
+  }
+
+  const variant = rng.pick(product.variants);
+  const attrLabel = Object.values(variant.attributes).join("/");
+  return {
+    productId: product.id,
+    sku: variant.sku,
+    name: attrLabel ? `${product.name} (${attrLabel})` : product.name,
+    unitPrice: Math.round((product.basePrice + variant.priceDelta) * 100) / 100,
+  };
+}
+
+export function generateLineItems(faker: Faker, rng: Rng, config: EcoFakerConfig, products: Product[]): LineItem[] {
   const count = rng.int(config.itemsPerCart.min, config.itemsPerCart.max);
   const items: LineItem[] = [];
 
   for (let i = 0; i < count; i++) {
-    const name = faker.commerce.productName();
-    const unitPrice = Number(faker.commerce.price({ min: 5, max: 300, dec: 2 }));
+    const picked = pickLineItem(faker, rng, products);
     const quantity = rng.weighted([
       [1, 60],
       [2, 25],
@@ -40,12 +71,9 @@ export function generateLineItems(faker: Faker, rng: Rng, config: EcoFakerConfig
       [4, 5],
     ]);
     items.push({
-      productId: faker.string.uuid(),
-      sku: faker.string.alphanumeric({ length: 8, casing: "upper" }),
-      name,
-      unitPrice,
+      ...picked,
       quantity,
-      lineTotal: Math.round(unitPrice * quantity * 100) / 100,
+      lineTotal: Math.round(picked.unitPrice * quantity * 100) / 100,
     });
   }
 
@@ -75,7 +103,8 @@ export function generateCartsForUser(
   rng: Rng,
   config: EcoFakerConfig,
   user: User,
-  now: number
+  now: number,
+  products: Product[]
 ): Cart[] {
   const count = rng.int(config.cartsPerUser.min, config.cartsPerUser.max);
   const carts: Cart[] = [];
@@ -114,7 +143,7 @@ export function generateCartsForUser(
       id: faker.string.uuid(),
       userId: user.id,
       status,
-      items: generateLineItems(faker, rng, config),
+      items: generateLineItems(faker, rng, config, products),
       createdAt: createdAt.toISOString(),
       lastActivityDate: lastActivityDate.toISOString(),
       abandonmentTimeoutHours: config.abandonmentTimeoutHours,
@@ -129,7 +158,8 @@ export function generateAbandonedCheckout(
   faker: Faker,
   rng: Rng,
   config: EcoFakerConfig,
-  cart: Cart
+  cart: Cart,
+  referenceNow: number
 ): AbandonedCheckout {
   const recoveryEmailSent = rng.chance(config.recoveryEmailRate);
   const exitTimestamp = cart.lastActivityDate;
@@ -139,11 +169,18 @@ export function generateAbandonedCheckout(
 
   if (recoveryEmailSent) {
     const exitMs = new Date(exitTimestamp).getTime();
+    // An abandoned cart's exitTimestamp can be as recent as
+    // `referenceNow - 3h` (see decideCartStatus's "abandoned" branch
+    // above), so adding up to 12h on top of it without a clamp could
+    // push recoveryEmailSentAt as much as 9h into the future -- the
+    // same unclamped-forward-offset bug class as order.createdAt,
+    // caught by the same expanded "no future timestamps" test right
+    // after that one was fixed.
     const sentAt = rng.dateBetween(
       new Date(exitMs + 30 * 60 * 1000), // at least 30 min after exit
-      new Date(exitMs + 12 * 60 * 60 * 1000) // within 12h
+      new Date(Math.min(exitMs + 12 * 60 * 60 * 1000, referenceNow)) // within 12h, never past referenceNow
     );
-    recoveryEmailSentAt = sentAt.toISOString();
+    recoveryEmailSentAt = new Date(Math.min(sentAt.getTime(), referenceNow)).toISOString();
     recovered = rng.chance(config.recoveryConversionRate);
   }
 

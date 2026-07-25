@@ -42,6 +42,12 @@ export interface EcoFakerConfig {
   freeShippingThreshold: number;
   flatShippingCost: number;
   anomalies: AnomalyConfig;
+  /** How many products to generate in the shared catalog that carts/orders draw line items from. */
+  catalogSize: number;
+  recommendationData: { enabled: boolean };
+  inventorySimulation: { enabled: boolean };
+  supportTickets: { enabled: boolean };
+  emailMessages: { enabled: boolean };
 }
 
 export interface Address {
@@ -100,6 +106,18 @@ export interface AbandonedCheckout {
   recovered: boolean;
 }
 
+export interface FraudTag {
+  fraudType:
+    | "stolen_card"
+    | "account_farming"
+    | "reseller_behavior"
+    | "refund_abuse"
+    | "friendly_chargeback"
+    | "coupon_abuse_ring";
+  riskScore: number; // 0-100
+  signals: string[];
+}
+
 export interface Order {
   id: string;
   cartId: string;
@@ -115,6 +133,7 @@ export interface Order {
   shippingAddress: Address | null;
   status: "processing" | "shipped" | "delivered";
   anomaly?: AnomalyTag;
+  fraud?: FraudTag;
 }
 
 export interface TrackingEvent {
@@ -150,12 +169,197 @@ export interface ReturnRequest {
   anomaly?: AnomalyTag;
 }
 
+export interface Category {
+  id: string;
+  name: string;
+  slug: string;
+  /** Null for a top-level category; set for a subcategory (e.g. "Laptops" under "Electronics"). One level of nesting -- not a full arbitrary-depth tree. */
+  parentCategoryId: string | null;
+}
+
+export interface Brand {
+  id: string;
+  name: string;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  country: string;
+  leadTimeDays: number;
+}
+
+export interface ProductVariant {
+  id: string;
+  sku: string;
+  /** e.g. { storage: "512GB", color: "Space Gray" } -- shape varies per product, deliberately untyped. */
+  attributes: Record<string, string>;
+  /** Added to the parent product's basePrice -- 0 for a variant with no price difference. */
+  priceDelta: number;
+  stockLevel: number;
+}
+
+export interface Product {
+  id: string;
+  sku: string;
+  name: string;
+  categoryId: string;
+  brandId: string;
+  supplierId: string;
+  basePrice: number;
+  currency: string;
+  variants: ProductVariant[];
+}
+
+export interface ProductView {
+  id: string;
+  userId: string;
+  productId: string;
+  timestamp: string;
+  source: "search" | "category_browse" | "recommendation" | "direct";
+}
+
+export interface SearchQuery {
+  id: string;
+  userId: string;
+  query: string;
+  timestamp: string;
+  resultCount: number;
+  /** Null if the search didn't lead to a click -- most searches don't. */
+  clickedProductId: string | null;
+}
+
+export interface WishlistItem {
+  id: string;
+  userId: string;
+  productId: string;
+  addedAt: string;
+}
+
+export interface ProductRating {
+  id: string;
+  userId: string;
+  productId: string;
+  /** Ratings only exist for products the user actually bought -- traced back to a real delivered order. */
+  orderId: string;
+  rating: number;
+  reviewText: string | null;
+  createdAt: string;
+}
+
+export interface Warehouse {
+  id: string;
+  name: string;
+  country: string;
+}
+
+export interface ReplenishmentOrder {
+  id: string;
+  productId: string;
+  supplierId: string;
+  warehouseId: string;
+  quantityOrdered: number;
+  orderedAt: string;
+  /** orderedAt + supplier.leadTimeDays -- grounded in the same field used for the supplier itself. */
+  expectedDeliveryAt: string;
+  /** Null while still in transit or delayed. */
+  receivedAt: string | null;
+  status: "ordered" | "in_transit" | "received" | "delayed";
+}
+
+export interface StockoutPeriod {
+  id: string;
+  productId: string;
+  /** Null if the stockout applied to the base product rather than a specific variant. */
+  variantId: string | null;
+  warehouseId: string;
+  startedAt: string;
+  /** Null if the stockout is still ongoing as of generation time. */
+  endedAt: string | null;
+  /** The replenishment order that resupplied stock and ended this stockout, if any. */
+  resolvedByReplenishmentId: string | null;
+}
+
+export interface WarehouseTransfer {
+  id: string;
+  productId: string;
+  fromWarehouseId: string;
+  toWarehouseId: string;
+  quantity: number;
+  initiatedAt: string;
+  /** Null if still in transit. */
+  completedAt: string | null;
+}
+
+export type TicketCategory = "shipping" | "return" | "product" | "billing" | "account" | "general";
+export type TicketPriority = "low" | "medium" | "high" | "urgent";
+export type TicketStatus = "open" | "in_progress" | "resolved" | "closed";
+
+export interface SupportTicket {
+  id: string;
+  userId: string;
+  /** Which real record, if any, this ticket is grounded in -- null for the small share of tickets that aren't tied to a specific order/return/rating (a generic account question, for instance). */
+  orderId: string | null;
+  returnRequestId: string | null;
+  productId: string | null;
+  category: TicketCategory;
+  subject: string;
+  priority: TicketPriority;
+  status: TicketStatus;
+  createdAt: string;
+  /** Null unless status is "resolved" or "closed". */
+  resolvedAt: string | null;
+}
+
+export interface SupportMessage {
+  id: string;
+  ticketId: string;
+  sender: "customer" | "agent";
+  body: string;
+  timestamp: string;
+}
+
+export type EmailType =
+  | "order_confirmation"
+  | "shipping_notification"
+  | "delivery_confirmation"
+  | "cart_abandonment_recovery"
+  | "return_confirmation";
+
+export interface EmailMessage {
+  id: string;
+  userId: string;
+  orderId: string | null;
+  cartId: string | null;
+  type: EmailType;
+  subject: string;
+  body: string;
+  sentAt: string;
+  opened: boolean;
+  clicked: boolean;
+}
+
 export interface Dataset {
   config: EcoFakerConfig;
+  categories: Category[];
+  brands: Brand[];
+  suppliers: Supplier[];
+  products: Product[];
   users: User[];
   carts: Cart[];
   abandonedCheckouts: AbandonedCheckout[];
   orders: Order[];
   shipments: Shipment[];
   returnRequests: ReturnRequest[];
+  productViews: ProductView[];
+  searchQueries: SearchQuery[];
+  wishlistItems: WishlistItem[];
+  productRatings: ProductRating[];
+  warehouses: Warehouse[];
+  replenishmentOrders: ReplenishmentOrder[];
+  stockoutPeriods: StockoutPeriod[];
+  warehouseTransfers: WarehouseTransfer[];
+  supportTickets: SupportTicket[];
+  supportMessages: SupportMessage[];
+  emailMessages: EmailMessage[];
 }

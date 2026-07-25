@@ -1,6 +1,7 @@
 import type { Faker } from "@faker-js/faker";
 import type { Rng } from "../../rng.js";
-import type { Address, Cart, EcoFakerConfig, LineItem, Order, ReturnRequest } from "../../types.js";
+import type { Address, Cart, EcoFakerConfig, LineItem, Order, Product, ReturnRequest } from "../../types.js";
+import { pickLineItem } from "../cart/index.js";
 
 const REMOTE_REGIONS: Array<{ state: string; city: string }> = [
   { state: "HI", city: "Honolulu" },
@@ -24,12 +25,20 @@ const REMOTE_SHIPPING_SURCHARGE = 24.99;
  * created in the dead of night (2-4am), the classic signature of scripted
  * checkout abuse or inventory-scraping bots. Rewrites the cart's items and
  * createdAt in place and returns whether it fired.
+ *
+ * Line items are drawn from the same shared product catalog as everything
+ * else (via `pickLineItem`) -- a real bot/scraping cart references real
+ * product ids at abnormal *volume*, it doesn't invent fake SKUs. Using
+ * invented ids here was a real bug: it silently produced hundreds of
+ * catalog-referential-integrity lint failures on an otherwise completely
+ * normal generated dataset, caught by `lint`'s new productId check.
  */
 export function maybeInjectBotCart(
   faker: Faker,
   rng: Rng,
   config: EcoFakerConfig,
-  cart: Cart
+  cart: Cart,
+  products: Product[]
 ): boolean {
   if (!config.anomalies.enabled) return false;
   if (!rng.chance(config.anomalies.botCartRate)) return false;
@@ -37,15 +46,12 @@ export function maybeInjectBotCart(
   const itemCount = rng.int(50, 120);
   const items: LineItem[] = [];
   for (let i = 0; i < itemCount; i++) {
-    const unitPrice = Number(faker.commerce.price({ min: 1, max: 50, dec: 2 }));
+    const picked = pickLineItem(faker, rng, products);
     const quantity = rng.int(1, 10);
     items.push({
-      productId: faker.string.uuid(),
-      sku: faker.string.alphanumeric({ length: 8, casing: "upper" }),
-      name: faker.commerce.productName(),
-      unitPrice,
+      ...picked,
       quantity,
-      lineTotal: Math.round(unitPrice * quantity * 100) / 100,
+      lineTotal: Math.round(picked.unitPrice * quantity * 100) / 100,
     });
   }
 
