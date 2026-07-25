@@ -141,6 +141,21 @@ function loadOrGenerateDataset(opts: Record<string, unknown>) {
   return generate(overrides, Date.now());
 }
 
+/**
+ * Shared by `fuzz`, `lint`, and `visualize`: load a dataset from
+ * `--input <path>` (any `generate --format json` output) if given,
+ * otherwise generate a fresh one from the usual `addCoreGenerateOptions`
+ * flags -- same "either load or generate" pattern `diff` and `webhook`
+ * already use individually.
+ */
+function loadOrGenerateDataset(opts: Record<string, unknown>) {
+  if (opts.input) {
+    return loadDatasetLike(path.resolve(process.cwd(), opts.input as string));
+  }
+  const overrides = resolveOverrides(opts);
+  return generate(overrides, Date.now());
+}
+
 addCoreGenerateOptions(
   program
     .command("generate")
