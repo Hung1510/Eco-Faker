@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createEcoFakerMcpServer } from "../src/mcp.js";
@@ -272,7 +274,7 @@ describe("eco-faker MCP server", () => {
   });
 
   it("resolve_scenario_file composes a real inherits chain and validates the result", async () => {
-    const filePath = `/tmp/eco-faker-mcp-scenario-${Date.now()}.yaml`;
+    const filePath = join(tmpdir(), `eco-faker-mcp-scenario-${Date.now()}.yaml`);
     writeFileSync(filePath, "inherits:\n  - black-friday\noverrides:\n  scaleFactor: 321\n", "utf-8");
     try {
       const resolved = jsonFrom(
@@ -287,8 +289,8 @@ describe("eco-faker MCP server", () => {
   });
 
   it("resolve_scenario_file surfaces a clear error for circular inheritance instead of crashing the server", async () => {
-    const pathA = `/tmp/eco-faker-mcp-cycle-a-${Date.now()}.yaml`;
-    const pathB = `/tmp/eco-faker-mcp-cycle-b-${Date.now()}.yaml`;
+    const pathA = join(tmpdir(), `eco-faker-mcp-cycle-a-${Date.now()}.yaml`);
+    const pathB = join(tmpdir(), `eco-faker-mcp-cycle-b-${Date.now()}.yaml`);
     writeFileSync(pathA, `inherits:\n  - ${pathB}\n`, "utf-8");
     writeFileSync(pathB, `inherits:\n  - ${pathA}\n`, "utf-8");
     try {
@@ -305,7 +307,7 @@ describe("eco-faker MCP server", () => {
     const gen = jsonFrom(
       (await client.callTool({ name: "generate_dataset", arguments: { scenario: "black-friday", seed: 4, scaleFactor: 150 } })) as any
     );
-    const outputPath = `/tmp/eco-faker-mcp-test-${Date.now()}.html`;
+    const outputPath = join(tmpdir(), `eco-faker-mcp-test-${Date.now()}.html`);
     const result = await client.callTool({
       name: "visualize_journey",
       arguments: { datasetId: gen.datasetId, outputPath },
