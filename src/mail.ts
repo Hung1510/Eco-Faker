@@ -69,7 +69,7 @@ export function startMailServer(options: MailServerOptions): Promise<MailServerH
         return;
       }
       resolve({
-        webUrl: `http://localhost:${options.webPort}`,
+        webUrl: `http://127.0.0.1:${options.webPort}`,
         close: () => new Promise((res) => maildev.close(() => res())),
       });
     });

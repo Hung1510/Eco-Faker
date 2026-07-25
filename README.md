@@ -301,7 +301,7 @@ The natural next step after generating email *content*: actually seeing it, in a
 
 ```bash
 my-eco-gen mail --users 300
-# Inbox running at http://localhost:1080
+# Inbox running at http://127.0.0.1:1080
 # Replaying 982 email(s) at 3600x speed, from orders@eco-faker.test...
 ```
 
@@ -312,7 +312,7 @@ my-eco-gen mail --users 300 --email-types order_confirmation,shipping_notificati
 my-eco-gen mail --users 300 --smtp-port 1035 --web-port 1090 --no-open               # custom ports, don't auto-open a browser
 ```
 
-Requires Node.js 18+ (same as the rest of the CLI). Ctrl+C stops the replay and closes the inbox.
+Requires Node.js 20+ (same as the rest of the CLI). Ctrl+C stops the replay and closes the inbox.
 
 ## Analytics dashboard (`dashboard`)
 
@@ -1315,7 +1315,7 @@ is the whole onboarding experience -- real JSON, no `npm install`, no clone.
 
 `.github/workflows/ci.yml` runs on every push, PR, and nightly (`workflow_dispatch` also available), across three jobs:
 
-- **`test`** -- typecheck + unit tests + build on Node 18.x and 20.x, `npm run smoke-test` (every scenario preset against compiled `dist/`, asserting relational/financial invariants independent of the vitest suite), and a static-bundle check (`npm run build:static` + `scripts/smoke-test-static.cjs` against a fake DOM)
+- **`test`** -- typecheck + unit tests + build on Node 20.x and 22.x, `npm run smoke-test` (every scenario preset against compiled `dist/`, asserting relational/financial invariants independent of the vitest suite), and a static-bundle check (`npm run build:static` + `scripts/smoke-test-static.cjs` against a fake DOM)
 - **`cli-e2e`** -- generate in all three formats, snapshot+replay byte-identical diff, `--stream` produces valid NDJSON, every scenario preset runs, `diff` reports zero drift comparing a run to itself, `--stores` generates N independent stores
 - **`mock-api-e2e`** -- `serve` answers on `/`, `/api/orders`, and `/openapi.json`; `--chaos --chaos-error-rate 1` reliably returns `500`; `--api-key` rejects unauthenticated requests and accepts the correct key; `/openapi.json`'s `$ref` pointers all resolve; `webhook --dry-run` produces a valid chronological event list; `--postman`'s output file and its `/postman.json` endpoint are byte-identical and carry the right auth block
 

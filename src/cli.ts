@@ -39,7 +39,7 @@ import { main as runMcpServer } from "./mcp.js";
 import { translatePromptToConfig, DEFAULT_NL_MODEL } from "./nl-generate.js";
 import type { EcoFakerConfig, Locale } from "./types.js";
 
-const TOOL_VERSION = "0.2.0";
+const TOOL_VERSION = "0.2.1";
 
 interface Snapshot {
   meta: { tool: "my-eco-gen"; toolVersion: string; createdAt: string; description?: string };

@@ -1,6 +1,6 @@
 {
   "name": "eco-faker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Stateful, relationally-consistent fake data generator for e-commerce apps: carts, abandoned checkouts, orders, shipments, returns, anomaly injection, and schema-aware SQL/CSV output.",
   "license": "MIT",
   "author": "Hung1510",
@@ -90,7 +90,7 @@
     "vitest": "^2.1.4"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "peerDependencies": {
     "@apollo/client": "^4.2.8",

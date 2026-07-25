@@ -450,7 +450,7 @@ export function buildOpenApiSpec(dataset: Dataset, port: number): object {
     openapi: "3.0.3",
     info: {
       title: "eco-faker mock API",
-      version: "0.2.0",
+      version: "0.2.1",
       description:
         "json-server-style mock REST API backed by a generated eco-faker dataset. Data changes every time the server restarts unless you pin --seed.",
     },
