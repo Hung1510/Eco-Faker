@@ -9,6 +9,7 @@ import {
   looksLikeGloballyInstalled,
   type OutputFormat,
 } from "./cliRunner.js";
+import { buildTableViewerHtml, loadDatasetTables } from "./tableViewer.js";
 
 const SCENARIOS = ["(default config, no scenario)", "black-friday", "post-holiday-returns", "flash-sale", "supply-chain-crisis", "steady-state"];
 const FORMATS: OutputFormat[] = ["json", "sql", "csv"];
@@ -81,10 +82,13 @@ async function generateDatasetCommand(): Promise<void> {
   const invocation = buildGenerateInvocation({ users, scenario, format, outputPath }, detectCli());
 
   await runAndReport(invocation, workspaceRoot, `Generating dataset (${users} users${scenario ? `, ${scenario}` : ""})`, async () => {
-    const choice = await vscode.window.showInformationMessage(`eco-faker: wrote ${path.relative(workspaceRoot, outputPath)}.`, "Open file");
+    const buttons = format === "json" ? ["Open file", "View tables"] : ["Open file"];
+    const choice = await vscode.window.showInformationMessage(`eco-faker: wrote ${path.relative(workspaceRoot, outputPath)}.`, ...buttons);
     if (choice === "Open file") {
       const doc = await vscode.workspace.openTextDocument(outputPath);
       await vscode.window.showTextDocument(doc);
+    } else if (choice === "View tables") {
+      await viewDatasetCommand(vscode.Uri.file(outputPath));
     }
   });
 }
@@ -111,10 +115,46 @@ async function scaffoldCommand(target: "next" | "msw"): Promise<void> {
   });
 }
 
+async function viewDatasetCommand(preselected?: vscode.Uri): Promise<void> {
+  const workspaceRoot = getWorkspaceRoot();
+  let fileUri = preselected;
+  if (!fileUri) {
+    const picked = await vscode.window.showOpenDialog({
+      title: "Select a dataset.json (from eco-faker generate --format json)",
+      defaultUri: workspaceRoot ? vscode.Uri.file(workspaceRoot) : undefined,
+      filters: { "JSON files": ["json"] },
+      canSelectMany: false,
+    });
+    if (!picked || picked.length === 0) return;
+    fileUri = picked[0];
+  }
+
+  let tables: ReturnType<typeof loadDatasetTables>;
+  try {
+    const raw = await vscode.workspace.fs.readFile(fileUri);
+    tables = loadDatasetTables(Buffer.from(raw).toString("utf-8"));
+  } catch (err) {
+    vscode.window.showErrorMessage(`eco-faker: couldn't read/parse that file as a dataset: ${(err as Error).message}`);
+    return;
+  }
+
+  if (Object.keys(tables).length === 0) {
+    vscode.window.showErrorMessage("eco-faker: that file has no array-valued tables to show -- is it a real dataset.json?");
+    return;
+  }
+
+  const panel = vscode.window.createWebviewPanel("ecoFakerTableViewer", `eco-faker: ${path.basename(fileUri.fsPath)}`, vscode.ViewColumn.One, {
+    enableScripts: true,
+    retainContextWhenHidden: true,
+  });
+  panel.webview.html = buildTableViewerHtml(tables);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   outputChannel = vscode.window.createOutputChannel("eco-faker");
   context.subscriptions.push(outputChannel);
   context.subscriptions.push(vscode.commands.registerCommand("eco-faker.generateDataset", generateDatasetCommand));
+  context.subscriptions.push(vscode.commands.registerCommand("eco-faker.viewDataset", viewDatasetCommand));
   context.subscriptions.push(vscode.commands.registerCommand("eco-faker.scaffoldNext", () => scaffoldCommand("next")));
   context.subscriptions.push(vscode.commands.registerCommand("eco-faker.scaffoldMsw", () => scaffoldCommand("msw")));
 }

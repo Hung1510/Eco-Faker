@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/cliRunner.ts", "tests/**/*.ts"]
+  "include": ["src/cliRunner.ts", "src/tableViewer.ts", "tests/**/*.ts"]
 }

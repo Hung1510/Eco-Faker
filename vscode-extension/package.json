@@ -13,14 +13,29 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
-      { "command": "eco-faker.generateDataset", "title": "eco-faker: Generate Dataset" },
-      { "command": "eco-faker.scaffoldNext", "title": "eco-faker: Scaffold Next.js Integration (init next)" },
-      { "command": "eco-faker.scaffoldMsw", "title": "eco-faker: Scaffold MSW Integration (init msw)" }
+      {
+        "command": "eco-faker.generateDataset",
+        "title": "eco-faker: Generate Dataset"
+      },
+      {
+        "command": "eco-faker.viewDataset",
+        "title": "eco-faker: View Dataset Tables"
+      },
+      {
+        "command": "eco-faker.scaffoldNext",
+        "title": "eco-faker: Scaffold Next.js Integration (init next)"
+      },
+      {
+        "command": "eco-faker.scaffoldMsw",
+        "title": "eco-faker: Scaffold MSW Integration (init msw)"
+      }
     ]
   },
   "scripts": {
@@ -32,10 +47,12 @@
     "package": "npm run build && vsce package"
   },
   "devDependencies": {
+    "@types/jsdom": "^28.0.3",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^2.32.0",
     "esbuild": "^0.24.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.7.0"
   }
 }

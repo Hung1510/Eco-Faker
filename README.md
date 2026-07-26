@@ -69,7 +69,7 @@ docker compose up --build
 - **Anomaly injection & fraud simulation** -- rare, high-value edge cases and fraud risk signals
 - **Schema introspection** (`init --schema`) -- maps onto an existing Prisma/Drizzle/SQLAlchemy/OpenAPI schema
 - **High-volume stream mode** (`--stream`) -- NDJSON straight to stdout, flat memory regardless of scale
-- **VS Code extension** -- generate a dataset or scaffold a Next.js/MSW integration from the Command Palette, no terminal needed (`vscode-extension/`)
+- **VS Code extension** -- generate a dataset, browse it in a webview table viewer, or scaffold a Next.js/MSW integration from the Command Palette, no terminal needed (`vscode-extension/`)
 - **CLI docs & shell completion** (`docs` / `completion`) -- opens the relevant README section in your browser; generates real bash/zsh/fish completion scripts derived from the live command list
 - **Dev container** (`.devcontainer/`) -- Node 22 + pre-seeded Postgres, zero-setup "Reopen in Container"
 - **Three output formats** -- JSON, SQL, CSV; deterministic given the same seed + reference time
@@ -832,6 +832,7 @@ docker-compose.yml         postgres + one-shot seed service
 vscode-extension/           standalone VS Code extension package (own package.json/tsconfig)
   src/extension.ts           command registration, QuickPick/progress UI (untested in a real Extension Host)
   src/cliRunner.ts            pure CLI-invocation building + spawn logic (unit- and integration-tested)
+  src/tableViewer.ts           webview table browser: switch/search/sort/paginate, entirely client-side (jsdom-tested)
 ```
 
 ## Performance
@@ -845,18 +846,18 @@ npm run perf-regression   # fails if generation time/memory regress beyond a sto
 
 ## VS Code extension
 
-A UI in front of the CLI, for generating data or scaffolding a project without leaving the editor -- see [`vscode-extension/`](./vscode-extension/) for the source and its own README.
+A UI in front of the CLI, for generating data, browsing it, or scaffolding a project without leaving the editor -- see [`vscode-extension/`](./vscode-extension/) for the source and its own README.
 
-Commands (Command Palette, `Cmd/Ctrl+Shift+P`): **eco-faker: Generate Dataset** (prompts for users/scenario/format/output path), **eco-faker: Scaffold Next.js Integration**, **eco-faker: Scaffold MSW Integration**. All three shell out to the real `my-eco-gen` CLI (or `npx eco-faker` if it's not installed globally) -- not a reimplementation of any generation logic.
+Commands (Command Palette, `Cmd/Ctrl+Shift+P`): **eco-faker: Generate Dataset** (prompts for users/scenario/format/output path, then offers to jump into the table viewer), **eco-faker: View Dataset Tables** (browse any generated `dataset.json` in a webview -- switch tables, search, sort, paginate, entirely client-side), **eco-faker: Scaffold Next.js Integration**, **eco-faker: Scaffold MSW Integration**. The CLI-invoking commands shell out to the real `my-eco-gen` CLI (or `npx eco-faker` if it's not installed globally) -- not a reimplementation of any generation logic.
 
 ```bash
 cd vscode-extension
 npm install
-npm test          # real CLI spawned end-to-end via node:test, no vscode module involved
+npm test          # real CLI spawned end-to-end + the table viewer's real HTML/JS run via jsdom, no vscode module involved
 npm run package   # produces an installable .vsix via @vscode/vsce
 ```
 
-First slice, scoped deliberately: generate + scaffold commands only, no in-editor table viewer or relationship explorer yet (a natural next step, not attempted here). The extension's own logic that builds CLI invocations is unit-tested directly and its real spawn behavior is verified end-to-end (see its README) -- but `extension.ts`'s actual VS Code UI (QuickPicks, progress notifications) hasn't been run inside a real Extension Host, since that needs downloading the actual VS Code binary from a host this environment can't reach. Stated plainly rather than implied otherwise.
+First slice, scoped deliberately: generate/view/scaffold commands only, no Miller-columns relationship drill-down yet (a natural next step, not attempted here -- the CLI's own `visualize`/static demo already cover a version of that outside the editor). The extension's own logic that builds CLI invocations and the table viewer's entire client-side behavior are both directly tested (including, for the table viewer, actually executing its real embedded script via jsdom -- table switching, search, sort, and pagination are all genuinely exercised) -- but `extension.ts`'s actual VS Code UI (QuickPicks, progress notifications, webview creation) hasn't been run inside a real Extension Host, since that needs downloading the actual VS Code binary from a host this environment can't reach. Stated plainly rather than implied otherwise.
 
 ## CLI docs & shell completion
 
