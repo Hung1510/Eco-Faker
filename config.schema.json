@@ -12,8 +12,8 @@
     },
     "locale": {
       "type": "string",
-      "description": "Locale used for names, addresses, and currency formatting.",
-      "enum": ["en-US", "en-GB", "es-ES", "de-DE", "fr-FR", "vi-VN"],
+      "description": "Locale used for names, addresses, and currency formatting. Any real @faker-js/faker locale code (BCP-47-ish, hyphenated), plus four legacy aliases (es-ES/de-DE/fr-FR/vi-VN) kept for backward compatibility -- see src/locales.ts's SUPPORTED_LOCALES for the exact, dependency-derived list.",
+      "enum": ["af-ZA", "ar", "az", "bn-BD", "cs-CZ", "cy", "da", "de", "de-AT", "de-CH", "de-DE", "dv", "el", "en", "en-AU", "en-CA", "en-GB", "en-GH", "en-HK", "en-IE", "en-IN", "en-NG", "en-US", "en-ZA", "eo", "es", "es-ES", "es-MX", "fa", "fi", "fr", "fr-BE", "fr-CA", "fr-CH", "fr-FR", "fr-LU", "fr-SN", "he", "hr", "hu", "hy", "id-ID", "it", "ja", "ka-GE", "ko", "lv", "mk", "nb-NO", "ne", "nl", "nl-BE", "pl", "pt-BR", "pt-PT", "ro", "ro-MD", "ru", "sk", "sr-RS-latin", "sv", "ta-IN", "th", "tr", "uk", "ur", "uz-UZ-latin", "vi", "vi-VN", "yo-NG", "zh-CN", "zh-TW", "zu-ZA"],
       "default": "en-US"
     },
     "scaleFactor": {

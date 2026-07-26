@@ -1,4 +1,16 @@
-export type Locale = "en-US" | "en-GB" | "es-ES" | "de-DE" | "fr-FR" | "vi-VN";
+/**
+ * Deliberately plain `string`, not a fixed string-literal union. The real
+ * set of valid values is computed dynamically from @faker-js/faker's own
+ * locale exports (see src/locales.ts's SUPPORTED_LOCALES) so it can't
+ * drift out of sync as that dependency adds/removes locales -- a
+ * hand-typed union here would either need constant manual updates or
+ * silently go stale the way this exact field once did (it used to list
+ * only 6 locales by hand). Real validation happens at runtime via
+ * config.schema.json's ajv enum, which is cross-checked against
+ * SUPPORTED_LOCALES in tests/locales.test.ts; this type just documents
+ * where to look rather than trying to also enforce it at compile time.
+ */
+export type Locale = string;
 
 export type CartStatus = "active" | "abandoned" | "converted";
 

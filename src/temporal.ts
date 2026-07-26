@@ -1,7 +1,7 @@
 import { generate } from "./generator.js";
 import { DEFAULT_CONFIG, mergeOverrides } from "./config.js";
 import { SCENARIOS } from "./scenarios.js";
-import type { Dataset, EcoFakerConfig } from "./types.js";
+import type { Dataset, EcoFakerConfig, User } from "./types.js";
 
 export interface TemporalSegment {
   /** How many days before referenceNow this segment's *older* edge sits. Must be strictly greater than toDaysAgo. */
@@ -166,7 +166,47 @@ export function mergeDatasets(datasets: Dataset[]): Dataset {
     merged.supportMessages.push(...dataset.supportMessages);
     merged.emailMessages.push(...dataset.emailMessages);
   }
+  dedupeUserEmails(merged.users);
   return merged;
+}
+
+/**
+ * A real bug this project's own full test suite caught directly: each
+ * segment's `generateUsers()` already guarantees no duplicate email
+ * *within* that one segment (see modules/user/index.ts's own
+ * createUniqueTracker usage) -- but that guarantee has no visibility past
+ * its own segment. Two segments each independently seeded (a deliberate
+ * simplification this file's own docstring already names -- disjoint user
+ * pools per segment) can still, rarely, produce the exact same email for
+ * two different users once merged into one final dataset, which is
+ * exactly what `lintDataset`'s `duplicate_email` check exists to catch --
+ * and did, on a real seed/profile combination in this project's own test
+ * suite, not a hypothetical case. Resolved here, at the actual merge
+ * boundary where cross-segment concerns belong, rather than trying to
+ * thread a single shared tracker through every segment's otherwise fully
+ * independent `generate()` call (exactly the core-loop coupling this
+ * whole temporal module was built to avoid).
+ *
+ * Deterministic and order-preserving: a colliding email gets a numeric
+ * `+2`/`+3`-style disambiguator (a real, common email convention, not an
+ * invented one) appended before the `@`, assigned in the same processing
+ * order every time for the same input, so this doesn't compromise
+ * reproducibility. Doesn't touch anything else in the dataset -- no other
+ * table joins on `email`, only on `id`, so mutating it post-merge is safe.
+ */
+function dedupeUserEmails(users: User[]): void {
+  const seen = new Set<string>();
+  for (const user of users) {
+    let email = user.email;
+    let suffix = 2;
+    while (seen.has(email)) {
+      const atIndex = user.email.lastIndexOf("@");
+      email = `${user.email.slice(0, atIndex)}+${suffix}${user.email.slice(atIndex)}`;
+      suffix++;
+    }
+    seen.add(email);
+    user.email = email;
+  }
 }
 
 /**

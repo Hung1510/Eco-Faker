@@ -1,4 +1,5 @@
-import { Faker, base, en, en_GB, es, de, fr, vi, type LocaleDefinition } from "@faker-js/faker";
+import { Faker } from "@faker-js/faker";
+import { resolveLocaleModules } from "./locales.js";
 import { Rng } from "./rng.js";
 import { resolveConfig } from "./config.js";
 import { generateUsers } from "./modules/user/index.js";
@@ -30,23 +31,6 @@ import type {
   Supplier,
   User,
 } from "./types.js";
-
-function localeToFakerModule(locale: EcoFakerConfig["locale"]): LocaleDefinition[] {
-  switch (locale) {
-    case "en-GB":
-      return [en_GB, en, base];
-    case "es-ES":
-      return [es, en, base];
-    case "de-DE":
-      return [de, en, base];
-    case "fr-FR":
-      return [fr, en, base];
-    case "vi-VN":
-      return [vi, en, base];
-    default:
-      return [en, base];
-  }
-}
 
 export type StreamRecord =
   | { table: "categories"; record: Category }
@@ -83,7 +67,7 @@ export function* generateRecords(
 ): Generator<StreamRecord, EcoFakerConfig, void> {
   const config = resolveConfig(overrides);
   const rng = new Rng(config.seed);
-  const faker = new Faker({ locale: localeToFakerModule(config.locale) });
+  const faker = new Faker({ locale: resolveLocaleModules(config.locale) });
   faker.seed(config.seed);
   const now = referenceNow;
 
@@ -206,7 +190,7 @@ export function generate(overrides: Partial<EcoFakerConfig> = {}, referenceNow: 
   // architecture choice, not an oversight. It never touches the RNG
   // stream the rest of the dataset was generated from, so whether this
   // feature is even enabled has zero effect on every other table's output.
-  const recFaker = new Faker({ locale: localeToFakerModule(dataset.config.locale) });
+  const recFaker = new Faker({ locale: resolveLocaleModules(dataset.config.locale) });
   recFaker.seed(dataset.config.seed ^ 0x5eed5eed);
   const recRng = new Rng(dataset.config.seed ^ 0x5eed5eed);
   const recData = generateRecommendationData(recFaker, recRng, dataset.config, dataset, referenceNow);
@@ -218,7 +202,7 @@ export function generate(overrides: Partial<EcoFakerConfig> = {}, referenceNow: 
   // Independent seed offset from recommendation data's -- toggling either
   // feature must never shift the other's output. See
   // generateInventorySimulation's docstring for why.
-  const invFaker = new Faker({ locale: localeToFakerModule(dataset.config.locale) });
+  const invFaker = new Faker({ locale: resolveLocaleModules(dataset.config.locale) });
   invFaker.seed(dataset.config.seed ^ 0x9a7c1a13);
   const invRng = new Rng(dataset.config.seed ^ 0x9a7c1a13);
   const invData = generateInventorySimulation(invFaker, invRng, dataset.config, dataset, referenceNow);
@@ -230,7 +214,7 @@ export function generate(overrides: Partial<EcoFakerConfig> = {}, referenceNow: 
   // Another independent seed offset -- distinct from both recommendation
   // data's and inventory simulation's, so toggling any one of the three
   // never shifts either of the others' output.
-  const supportFaker = new Faker({ locale: localeToFakerModule(dataset.config.locale) });
+  const supportFaker = new Faker({ locale: resolveLocaleModules(dataset.config.locale) });
   supportFaker.seed(dataset.config.seed ^ 0x5000a123);
   const supportRng = new Rng(dataset.config.seed ^ 0x5000a123);
   const supportData = generateSupportTickets(supportFaker, supportRng, dataset.config, dataset, referenceNow);
@@ -240,7 +224,7 @@ export function generate(overrides: Partial<EcoFakerConfig> = {}, referenceNow: 
   // Another independent seed offset -- distinct from recommendation
   // data's, inventory simulation's, and support tickets', so toggling
   // any one of the four never shifts any of the others' output.
-  const emailFaker = new Faker({ locale: localeToFakerModule(dataset.config.locale) });
+  const emailFaker = new Faker({ locale: resolveLocaleModules(dataset.config.locale) });
   emailFaker.seed(dataset.config.seed ^ 0x3ea1101c);
   const emailRng = new Rng(dataset.config.seed ^ 0x3ea1101c);
   const emailData = generateEmailMessages(emailFaker, emailRng, dataset.config, dataset, referenceNow);

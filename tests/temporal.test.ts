@@ -83,6 +83,33 @@ describe("temporal scenario engine", () => {
       const merged = mergeDatasets([a, b]);
       expect(lintDataset(merged)).toEqual([]);
     });
+
+    it("resolves a real cross-segment email collision deterministically, rather than leaving a duplicate lint would flag", () => {
+      // Each segment's own generateUsers() already guarantees no duplicate
+      // within itself (see modules/user/index.ts) -- this specifically
+      // covers the gap that guarantee doesn't reach: two different,
+      // independently-seeded segments producing the exact same email once
+      // merged. A real seed/profile combination hit this for real in this
+      // project's own test suite before the fix below existed; forcing it
+      // here (rather than hunting for another colliding seed pair) makes
+      // the regression test itself deterministic and obvious about what
+      // it's checking.
+      const a = generate({ seed: 5, scaleFactor: 30 });
+      const b = generate({ seed: 6, scaleFactor: 30 });
+      const forcedDuplicateEmail = a.users[0].email;
+      b.users[0].email = forcedDuplicateEmail;
+
+      const merged = mergeDatasets([a, b]);
+      const emails = merged.users.map((u) => u.email);
+      expect(new Set(emails).size, "every email in the merged dataset should be unique").toBe(emails.length);
+      expect(lintDataset(merged).some((issue) => issue.rule === "duplicate_email")).toBe(false);
+
+      // The colliding user's email changed; nothing else about that user did.
+      expect(merged.users[a.users.length].email).not.toBe(forcedDuplicateEmail);
+      expect(merged.users[a.users.length].id).toBe(b.users[0].id);
+      // The other user (whichever one keeps the original) is untouched.
+      expect(merged.users.some((u) => u.email === forcedDuplicateEmail)).toBe(true);
+    });
   });
 
   describe("generateWithTemporalProfile", () => {

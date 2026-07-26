@@ -1,0 +1,51 @@
+# A real cross-resource, multi-step scenario: create a cart, convert it to
+# an order, ship it, attempt an illegal cancel (a shipped order should
+# reject cancellation), then request a return. Run it with:
+#
+#   my-eco-gen test --url <your-api> --contract ./your-openapi.json \
+#     --scenario ./examples/scenarios/full-lifecycle.yaml \
+#     --seed ./eco-data.json
+#
+# {{seed.*}} pulls a real value out of the dataset passed via --seed (here,
+# a real user id) -- swap `/carts`, `/carts/{id}/checkout`, etc. for your
+# own API's real paths; this file's paths are illustrative, not eco-faker's
+# own mock API (which is read-only and has no cart/checkout/ship/cancel
+# endpoints of its own).
+name: full-lifecycle
+steps:
+  - name: createCart
+    method: POST
+    path: /carts
+    body:
+      userId: "{{seed.users.0.id}}"
+    expectStatus: 201
+    capture:
+      cartId: id
+
+  - name: checkout
+    method: POST
+    path: /carts/{{createCart.cartId}}/checkout
+    expectStatus: 201
+    expectBody:
+      status: processing
+    capture:
+      orderId: id
+
+  - name: ship
+    method: POST
+    path: /orders/{{checkout.orderId}}/ship
+    expectStatus: 200
+    expectBody:
+      status: shipped
+
+  - name: illegalCancel
+    method: POST
+    path: /orders/{{checkout.orderId}}/cancel
+    expectStatus: 409
+
+  - name: requestReturn
+    method: POST
+    path: /orders/{{checkout.orderId}}/return
+    expectStatus: 200
+    expectBody:
+      status: returning

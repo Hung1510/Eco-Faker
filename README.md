@@ -53,9 +53,11 @@ docker compose up --build
 - **Scenario composer** (`--scenario-file`) -- author your own reusable scenario, inheriting from built-ins or other files
 - **Funnel-targeted generation** (`--target-funnel-rate`) -- binary-searches `abandonmentRate` to hit a target conversion rate
 - **Natural-language generation** (`--prompt`) -- describe the dataset in plain English, Claude fills in config
-- **Framework scaffolding** (`init next` / `init msw`) -- writes real files wiring eco-faker into a project you already have
+- **Framework scaffolding** (`init next` / `init msw` / `init prisma` / `init drizzle` / `init sqlalchemy`) -- writes real files wiring eco-faker into a project you already have, including a real ORM seed script scoped to the six core tables
 - **Mock REST API** (`serve`) -- paginated, filterable, json-server-style API, with chaos mode, API-key auth, OpenAPI spec, Postman export, live WebSocket feed, GraphQL mount
-- **Contract & mutation testing** (`test --contract` / `--mutate`) -- fires real requests at a live API and checks status codes, response shapes, idempotency, race conditions, invalid transitions
+- **Contract testing** (`test --contract`) -- fires real GET requests at a live API and checks status codes + response shapes against an OpenAPI contract
+- **Mutation testing** (`test --mutate`) -- fires real POST/PATCH requests at a live API: idempotency, race conditions, invalid status transitions (auto-detected from the contract's own ordered enums), 401/404
+- **Scenario testing** (`test --scenario`) -- a strict, ordered, cross-resource sequence of real requests (cart → checkout → ship → illegal cancel → return), threading real captured ids between steps, asserting the actual business-logic outcome at each stage
 - **MSW / tRPC / GraphQL / React Query / Apollo Client adapters** -- same dataset, same filter/sort/paginate semantics, no server required
 - **MCP server** (`mcp`) -- generate/query/fuzz/lint/visualize as tools any MCP client can call directly
 - **Semantic fuzzing** (`fuzz`) -- schema-valid but logically-impossible mutations, finding bugs schema validation can't catch
@@ -72,6 +74,8 @@ docker compose up --build
 - **VS Code extension** -- generate a dataset, browse it in a webview table viewer, or scaffold a Next.js/MSW integration from the Command Palette, no terminal needed (`vscode-extension/`)
 - **CLI docs & shell completion** (`docs` / `completion`) -- opens the relevant README section in your browser; generates real bash/zsh/fish completion scripts derived from the live command list
 - **Dev container** (`.devcontainer/`) -- Node 22 + pre-seeded Postgres, zero-setup "Reopen in Container"
+- **73 locales** (`locales`) -- every real locale @faker-js/faker ships, derived dynamically from the installed dependency rather than a hand-maintained list
+- **Guaranteed-unique values** (`createUniqueTracker`) -- the same collision-prevention guarantee faker-js/faker-ruby's own `.unique` provide, explicitly scoped rather than a hidden global registry; applied internally to user emails
 - **Three output formats** -- JSON, SQL, CSV; deterministic given the same seed + reference time
 
 ## Install
@@ -101,7 +105,7 @@ const sql = serialize(dataset, "sql"); // or "json" / "csv"
 
 `dataset` already contains relationally-linked `users`, `carts`, `abandonedCheckouts`, `orders`, `shipments`, `returnRequests`, and more.
 
-## Framework scaffolding (`init next` / `init msw`)
+## Framework scaffolding (`init next` / `init msw` / `init prisma` / `init drizzle` / `init sqlalchemy`)
 
 Writes real, runnable files wiring eco-faker into a project you already have.
 
@@ -114,16 +118,24 @@ my-eco-gen init msw
 # Wrote mocks/eco-handlers.ts
 # Wrote mocks/browser.ts
 # Wrote mocks/server.ts
+
+my-eco-gen init prisma --schema ./schema.prisma
+# Wrote scripts/eco-seed.mjs
+# Wrote prisma/seed.ts
+# Wrote mapping.json
 ```
 
 - **`init next`** -- a seed script (writes `eco-data.json`) plus a Next.js App Router route handler serving `GET /api/eco/orders` etc. with `?limit=&offset=` pagination.
 - **`init msw`** -- MSW handlers (`toMswHandlers`) plus `mocks/browser.ts` (`setupWorker`) and `mocks/server.ts` (`setupServer`), both importing the same handlers.
+- **`init prisma` / `init drizzle` / `init sqlalchemy`** -- need `--schema <path>` to introspect (same schema types `init --schema` alone accepts). Each writes the shared seed script plus a real `mapping.json` (identical to what `init --schema` alone produces -- review it before trusting it) *and* a real seed script that actually uses that mapping, scoped to the six core relational tables (`users`/`carts`/`abandonedCheckouts`/`orders`/`shipments`/`returnRequests`) in real FK-safe order:
+  - **`prisma`** -- `prisma/seed.ts`, fully runnable as-is (assuming `@prisma/client` is generated and `DATABASE_URL` is set): one `createMany` per model.
+  - **`drizzle`**/**`sqlalchemy`** -- a template, not a drop-in script. Connection setup (driver, credentials) varies too much project-to-project to generate blindly, so the `db`/`Session` is left as a clearly-marked `TODO` fill-in. SQLAlchemy's script also shells out to Node to run the seed generator first, since eco-faker has no Python bindings.
 
-`--seed <number>` bakes a seed into the script (default 1); `--force` overwrites existing files.
+`--seed <number>` bakes a seed into the script (default 1); `--force` overwrites existing files. `init next`/`init msw` don't take `--schema` (nothing to introspect); `init prisma`/`init drizzle`/`init sqlalchemy` require it.
 
 Note: the MSW scaffold paginates with `?page=&pageSize=` (matching `serve`), not `?limit=&offset=` -- an unrecognized param is silently treated as an equality filter rather than erroring.
 
-Deliberately no `init prisma` scaffold target -- "prisma" already means something in this command (`init --schema-type prisma`, below). Use `init --schema` for Prisma seeding.
+`init prisma --schema X` is a strict superset of `init --schema X --schema-type prisma` (below) -- same parser, same mapping, plus the real seed script. Use `init --schema` alone if you only want the reviewable `mapping.json` and nothing else.
 
 ## CLI
 
@@ -564,7 +576,36 @@ my-eco-gen generate --users 300 --output ./eco-data.json
 my-eco-gen test --url https://api.example.com --contract ./your-openapi.json --mutate --seed ./eco-data.json
 ```
 
-Five checks: `not_found`, `unauthorized`, `duplicate_submission`, `race_condition`, `invalid_transition`. The last is fully automatic -- any schema with an ordered status `enum` gets a real backward-transition attempt, no config needed. `duplicate_submission`/`race_condition` need `--seed <dataset.json>` to build real POST bodies; `--concurrency`, `--idempotency-header` tune the race check. No cross-resource multi-step scenario replay yet.
+Five checks: `not_found`, `unauthorized`, `duplicate_submission`, `race_condition`, `invalid_transition`. The last is fully automatic -- any schema with an ordered status `enum` gets a real backward-transition attempt, no config needed. `duplicate_submission`/`race_condition` need `--seed <dataset.json>` to build real POST bodies; `--concurrency`, `--idempotency-header` tune the race check. Every check here is a single mutating request against a single resource -- for a real cross-resource, multi-step workflow, see `--scenario` below.
+
+### Scenario testing (`test --scenario`)
+
+The cross-resource half `--mutate` doesn't cover: a strict, ordered sequence of real requests across multiple resources, with real ids captured from each response threaded into the next step -- and the actual business-logic outcome checked at every stage, not just the last request's HTTP code.
+
+```bash
+my-eco-gen generate --users 300 --output ./eco-data.json
+my-eco-gen test --url https://api.example.com --contract ./your-openapi.json \
+  --scenario ./examples/scenarios/full-lifecycle.yaml --seed ./eco-data.json
+# ok:   createCart (POST /carts) -> 201
+# ok:   checkout (POST /carts/26d26082.../checkout) -> 201
+# ok:   ship (POST /orders/f64639df.../ship) -> 200
+# ok:   illegalCancel (POST /orders/f64639df.../cancel) -> 409
+# ok:   requestReturn (POST /orders/f64639df.../return) -> 200
+#
+# 5 passed, 0 failed (--scenario).
+```
+
+A scenario file (YAML or JSON, see [`examples/scenarios/full-lifecycle.yaml`](./examples/scenarios/full-lifecycle.yaml)) is a `name` plus an ordered `steps` list. Each step:
+
+- `method`/`path` -- `path` can reference `{{stepName.field}}` (a value an earlier step captured) or `{{seed.field}}` (a real value from the dataset passed via `--seed`, e.g. `{{seed.users.0.id}}` for a real user id).
+- `body` -- same placeholder substitution, at any depth.
+- `expectStatus` -- accepted status code(s). A step that's *supposed* to be rejected (cancelling a shipped order, say) declares its real expected rejection code here -- that's a pass, not a failure.
+- `expectBody` -- shallow dot-path field checks against the real response body. This is the actual business-logic assertion: a step can return the "right" status with the wrong resulting state, and `expectStatus` alone would miss that.
+- `capture` -- `{ localName: "dot.path.into.response" }`, available to later steps as `{{stepName.localName}}`.
+
+The scenario stops at the first failed step -- a later step referencing a value the failed step should have produced has nothing real to inject, so continuing wouldn't test anything meaningful. An unresolved placeholder (a typo'd step name, a reference to a step that never ran) is reported as its own specific failure, not silently left as a literal `{{...}}` in the request or swallowed into a confusing downstream 404.
+
+Deliberately doesn't also validate each step's response against the OpenAPI contract's declared schema the way `test --contract`'s read-path checks do -- mapping a resolved request path with real ids substituted in back to the contract's own templated path is real work on its own, and `expectStatus`/`expectBody` already cover the actual point of this feature (the business-logic outcome at each stage). A stated future enhancement, not attempted this round.
 
 ## Multi-store / multi-tenant mode
 
@@ -652,7 +693,7 @@ Maps eco-faker's canonical columns onto your real schema/API's field names. `map
 my-eco-gen generate --users 200 --format sql --mapping ./mapping.json --output ./seed.sql
 ```
 
-(For `init next`/`init msw` instead -- see Framework scaffolding above.)
+(For a real seed script that actually uses this mapping, not just the mapping.json itself -- see `init prisma`/`init drizzle`/`init sqlalchemy` in Framework scaffolding above. For `init next`/`init msw` instead, same section.)
 
 ## High-volume stream mode
 
@@ -753,6 +794,33 @@ npm publish --access public
 5. **Return eligibility** -- only for orders whose every `Shipment` reached `Delivered`.
 6. **Determinism** -- same `seed` + same `referenceNow` → byte-identical dataset.
 
+## Locale support (`locales`)
+
+```bash
+my-eco-gen locales
+# 73 supported locales (derived from the installed @faker-js/faker):
+# af-ZA, ar, az, ..., zh-CN, zh-TW, zu-ZA
+
+my-eco-gen generate --users 200 --locale ja --format json --output ./eco-data.json
+```
+
+Every real locale [@faker-js/faker](https://fakerjs.dev) ships (73 at time of writing) -- names, addresses, and currency formatting all follow `--locale`/`config.locale`. Computed dynamically from the installed dependency's own real locale exports (`src/locales.ts`), not a hand-maintained list -- a future `@faker-js/faker` version adding a locale means eco-faker gains it automatically. Joke locales (`en_BORK`, the "Swedish Chef" parody; `en_AU_ocker`, an exaggerated-slang parody) are filtered out. Four legacy names (`es-ES`/`de-DE`/`fr-FR`/`vi-VN`, eco-faker's own historical spelling for what faker-js calls bare `es`/`de`/`fr`/`vi`) are kept working for backward compatibility.
+
+A handful of locales genuinely lack certain address fields in faker-js's own data -- `ro-MD` has no state/region concept at all, and `en-HK` (Hong Kong) has no postal codes, both historically accurate rather than data gaps. Those fields come back as an empty string rather than a fabricated value.
+
+## Guaranteed-unique values
+
+`generate()` guarantees no two users share an email within one call -- the same real-collision problem faker-js's own `faker.helpers.unique(...)` and faker-ruby's `Faker::X.unique.method` exist to solve (naive fake-data generation really does produce duplicates: confirmed directly at `scaleFactor: 5000`, a handful of seeds produced real duplicate emails before this existed). `src/unique.ts` exports `createUniqueTracker<T>()` -- explicitly scoped by construction (you create one, hold onto it for exactly as long as the constraint should apply, and it's garbage afterward) rather than a hidden global registry that could leak state between two unrelated `generate()` calls in a long-running process:
+
+```ts
+import { createUniqueTracker } from "eco-faker";
+
+const uniqueSku = createUniqueTracker<string>();
+const sku = uniqueSku.next(() => faker.string.alphanumeric(8).toUpperCase());
+```
+
+Throws `UniqueRetryLimitExceededError` (not an infinite loop) if a value space turns out to be too small for what's being asked of it. The temporal scenario engine's segment-merging (`mergeDatasets`) resolves the same kind of collision one level up -- two independently-seeded segments producing the same email once merged -- with a deterministic `+2`/`+3`-style disambiguator, since a per-segment tracker alone can't see across segments.
+
 ## Configurable behavioral parameters
 
 See [`config.schema.json`](./config.schema.json) for the full list. Highlights:
@@ -778,6 +846,8 @@ Validated against `config.schema.json` via [ajv](https://ajv.js.org/) -- invalid
 ```
 src/
   rng.ts                seeded PRNG (mulberry32) -- every probabilistic decision runs through this
+  unique.ts              createUniqueTracker() -- scoped, explicit uniqueness guarantee (matches faker-js/faker-ruby's own .unique)
+  locales.ts              dynamic locale resolution from @faker-js/faker's own allLocales export (`locales` command)
   config.ts              defaults, merging (mergeOverrides), ajv schema validation
   config-schema-object.ts  the schema as a plain TS object (mirrors config.schema.json)
   scenarios.ts            named business-scenario config presets
@@ -792,7 +862,9 @@ src/
   diff.ts                   dataset/snapshot structural diffing
   contract-test.ts           read-path contract testing engine (`test --contract`)
   mutation-test.ts           write-path/mutation contract testing engine (`test --mutate`)
+  scenario-test.ts            cross-resource, multi-step scenario testing engine (`test --scenario`)
   scaffold.ts                 templates for `init next` / `init msw`
+  orm-scaffold.ts              real ORM seed scripts for `init prisma`/`init drizzle`/`init sqlalchemy`
   score.ts                   realism-score engine (`score`)
   docs.ts                     README heading parsing + GitHub-slug replication (`docs`)
   completion.ts                bash/zsh/fish completion script generation (`completion`)
@@ -819,6 +891,8 @@ web/
 web-static/
   index.html / explorer.html   static demos, no server
   src/app.ts / explorer.ts     import src/browser.ts directly
+examples/
+  scenarios/full-lifecycle.yaml   real, runnable example for `test --scenario`
 scripts/
   smoke-test.mjs           CI structural smoke test against compiled dist/
   perf-regression.mjs       generation-time/memory regression check against a stored baseline

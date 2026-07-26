@@ -10,8 +10,12 @@ export interface ScaffoldResult {
   nextSteps: string[];
 }
 
-export const SCAFFOLD_TARGETS = ["next", "msw"] as const;
-export type ScaffoldTarget = (typeof SCAFFOLD_TARGETS)[number];
+/** Scaffold targets that write files directly with no schema to introspect. */
+export const SIMPLE_SCAFFOLD_TARGETS = ["next", "msw"] as const;
+/** Scaffold targets that need --schema <path> to introspect a real schema first -- see orm-scaffold.ts. Handled separately from buildScaffold below since they need the parsed schema/mapping, not just a seed. */
+export const ORM_SCAFFOLD_TARGETS = ["prisma", "drizzle", "sqlalchemy"] as const;
+export const SCAFFOLD_TARGETS = [...SIMPLE_SCAFFOLD_TARGETS, ...ORM_SCAFFOLD_TARGETS] as const;
+export type ScaffoldTarget = (typeof SIMPLE_SCAFFOLD_TARGETS)[number];
 
 export interface ScaffoldOptions {
   /** Seed baked into the generated seed script (default: 1). */
@@ -20,23 +24,26 @@ export interface ScaffoldOptions {
 
 /**
  * Writes real, runnable files wiring eco-faker into a fresh project --
- * distinct from `init --schema`, which maps eco-faker's own output onto a
- * schema *you already have*. This writes new files; that one adapts
- * eco-faker to existing ones. Two different jobs sharing the `init` verb
- * because that's genuinely what "the command you run after installing
- * this" means in both directions -- disambiguated by a positional target
- * (`init next`/`init msw`) vs. the `--schema` flag, not by two separate
- * command names, since a newcomer typing `eco-faker init --help` should
- * see both paths in one place.
+ * distinct from `init --schema` alone, which maps eco-faker's own output
+ * onto a schema *you already have* and stops at a reviewable mapping.json.
+ * This writes new files that actually use that mapping. Two related jobs
+ * sharing the `init` verb because that's genuinely what "the command you
+ * run after installing this" means in both directions -- disambiguated by
+ * a positional target vs. bare `--schema`, not by two separate command
+ * names, since a newcomer typing `eco-faker init --help` should see both
+ * paths in one place.
  *
- * Deliberately just `next` and `msw` for now, not also `prisma` -- the
- * word "prisma" already means something different in this same command
- * (`init --schema-type prisma`, which maps onto an *existing* Prisma
- * schema). A third scaffold target reusing that word for "write a new
- * seed.ts" would collide in meaning with a flag two lines away in the
- * same `--help` output. `init --schema ./schema.prisma` already covers
- * the Prisma seeding path end to end; this isn't a gap, it's the same
- * feature under the name that already exists for it.
+ * This function only covers `next`/`msw` (no schema to introspect --
+ * SIMPLE_SCAFFOLD_TARGETS). `init prisma`/`init drizzle`/`init sqlalchemy`
+ * (ORM_SCAFFOLD_TARGETS, in ../orm-scaffold.ts) resolve the naming tension
+ * that once kept them out entirely -- "prisma" already meaning something
+ * in `init --schema-type prisma` -- by making the scaffold target a strict
+ * superset of the mapping-only mode rather than a competing meaning of the
+ * same word: `init prisma --schema X` does everything `init --schema X
+ * --schema-type prisma` does (writes the same reviewable mapping.json)
+ * *plus* a real seed script that actually uses it. Same schema, same
+ * parser, same mapping -- just further along the same path, not a fork
+ * in it.
  */
 export function buildScaffold(target: ScaffoldTarget, options: ScaffoldOptions = {}): ScaffoldResult {
   const seed = options.seed ?? 1;
@@ -44,8 +51,9 @@ export function buildScaffold(target: ScaffoldTarget, options: ScaffoldOptions =
   return buildMswScaffold(seed);
 }
 
-function buildNextScaffold(seed: number): ScaffoldResult {
-  const seedScript = `// Generates a fake dataset and writes it to ./eco-data.json.
+/** The seed-script template shared by every scaffold that needs a real, generated eco-data.json to work from -- extracted once so it's the single source of truth rather than a copy living in each scaffold. */
+export function buildEcoSeedScript(seed: number): string {
+  return `// Generates a fake dataset and writes it to ./eco-data.json.
 // Run: node scripts/eco-seed.mjs
 import { generate, serialize } from "eco-faker";
 import { writeFileSync } from "node:fs";
@@ -57,6 +65,10 @@ const dataset = generate({ seed: ${seed} });
 writeFileSync("./eco-data.json", serialize(dataset, "json"), "utf-8");
 console.log(\`Wrote eco-data.json: \${dataset.orders.length} orders, \${dataset.users.length} users\`);
 `;
+}
+
+function buildNextScaffold(seed: number): ScaffoldResult {
+  const seedScript = buildEcoSeedScript(seed);
 
   const routeHandler = `// GET /api/eco/orders, /api/eco/users, /api/eco/shipments, etc.
 // GET /api/eco/orders?limit=20&offset=0 for pagination.

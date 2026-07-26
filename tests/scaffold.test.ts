@@ -2,11 +2,19 @@ import { describe, expect, it } from "vitest";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { generate, serialize } from "../src/index.js";
-import { buildScaffold, SCAFFOLD_TARGETS } from "../src/scaffold.js";
+import { buildScaffold, SCAFFOLD_TARGETS, SIMPLE_SCAFFOLD_TARGETS, ORM_SCAFFOLD_TARGETS } from "../src/scaffold.js";
 
 describe("buildScaffold", () => {
-  it("SCAFFOLD_TARGETS is exactly next and msw -- prisma is deliberately excluded (see scaffold.ts's doc comment)", () => {
-    expect(SCAFFOLD_TARGETS).toEqual(["next", "msw"]);
+  it("SIMPLE_SCAFFOLD_TARGETS is exactly next and msw -- the ones buildScaffold itself handles (no schema to introspect)", () => {
+    expect(SIMPLE_SCAFFOLD_TARGETS).toEqual(["next", "msw"]);
+  });
+
+  it("ORM_SCAFFOLD_TARGETS is exactly prisma/drizzle/sqlalchemy -- handled by orm-scaffold.ts, not this module, since they need a parsed schema", () => {
+    expect(ORM_SCAFFOLD_TARGETS).toEqual(["prisma", "drizzle", "sqlalchemy"]);
+  });
+
+  it("SCAFFOLD_TARGETS is the union of both, in that order", () => {
+    expect(SCAFFOLD_TARGETS).toEqual(["next", "msw", "prisma", "drizzle", "sqlalchemy"]);
   });
 
   describe("next", () => {

@@ -57,10 +57,10 @@ describe("my-eco-gen init", () => {
     expect(result.stdout).toContain("msw");
   });
 
-  it("refuses both a scaffold target and --schema in the same call, explaining they're two different things", () => {
+  it("refuses --schema on a simple scaffold target (next/msw), which have no schema to introspect", () => {
     const result = runCli(["init", "next", "--schema", "./schema.prisma"], dir);
     expect(result.status).not.toBe(0);
-    expect(result.stdout).toContain("Can't use both a scaffold target");
+    expect(result.stdout).toContain('"next" doesn\'t take --schema');
   });
 
   it("refuses neither a target nor --schema, printing usage for both modes", () => {
@@ -98,5 +98,115 @@ describe("my-eco-gen init", () => {
     expect(result.status).toBe(0);
     expect(existsSync(path.join(dir, "mapping.json"))).toBe(true);
     expect(result.stdout).toContain("Parsed 1 model(s)/schema(s)");
+  });
+
+  const realPrismaSchema = `
+model User { id String @id
+  firstName String
+  lastName String
+  email String
+  locale String
+  createdAt String
+  address Json
+}
+model Cart { id String @id
+  userId String
+  status String
+  items Json
+  createdAt String
+  lastActivityDate String
+  abandonmentTimeoutHours Int
+  currency String
+}
+model AbandonedCheckout { id String @id
+  cartId String
+  userId String
+  exitTimestamp String
+  recoveryEmailSent Boolean
+  recoveryEmailSentAt String?
+  couponCodeOffered Boolean
+  recovered Boolean
+}
+model Order { id String @id
+  cartId String
+  userId String
+  items Json
+  subtotal Float
+  tax Float
+  shipping Float
+  total Float
+  currency String
+  createdAt String
+  shippingAddress Json?
+  status String
+}
+model Shipment { id String @id
+  orderId String
+  trackingNumber String
+  carrier String
+  packageIndex Int
+  totalPackages Int
+  items Json
+  status String
+  delayed Boolean
+  events Json
+}
+model ReturnRequest { id String @id
+  orderId String
+  userId String
+  reason String
+  status String
+  refundAmount Float
+  requestedAt String
+  resolvedAt String?
+}
+`;
+
+  it("init prisma --schema writes a real seed script, the shared eco-seed.mjs, and mapping.json", () => {
+    writeFileSync(path.join(dir, "schema.prisma"), realPrismaSchema, "utf-8");
+    const result = runCli(["init", "prisma", "--schema", "schema.prisma"], dir);
+    expect(result.status).toBe(0);
+    expect(existsSync(path.join(dir, "prisma/seed.ts"))).toBe(true);
+    expect(existsSync(path.join(dir, "scripts/eco-seed.mjs"))).toBe(true);
+    expect(existsSync(path.join(dir, "mapping.json"))).toBe(true);
+    expect(result.stdout).toContain("Parsed 6 model(s)");
+  });
+
+  it("init prisma without --schema refuses with a clear, specific message", () => {
+    const result = runCli(["init", "prisma"], dir);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('"init prisma" needs a schema to introspect');
+  });
+
+  it("init drizzle --schema writes a template with a real model name and a clear fill-in marker", () => {
+    // Drizzle schemas are TS/JS; the parser scans for `export const x = pgTable("name", {...})`-style declarations.
+    writeFileSync(
+      path.join(dir, "schema.ts"),
+      'export const users = pgTable("users", {\n  id: text("id"),\n  firstName: text("first_name"),\n});\n',
+      "utf-8"
+    );
+    const result = runCli(["init", "drizzle", "--schema", "schema.ts"], dir);
+    expect(result.status).toBe(0);
+    expect(existsSync(path.join(dir, "scripts/eco-seed-drizzle.ts"))).toBe(true);
+    const contents = readFileSync(path.join(dir, "scripts/eco-seed-drizzle.ts"), "utf-8");
+    expect(contents).toContain("TODO");
+  });
+
+  it("init sqlalchemy --schema writes a real, syntactically valid Python seed template", () => {
+    writeFileSync(
+      path.join(dir, "models.py"),
+      "class User(Base):\n    __tablename__ = 'users'\n    id = Column(String, primary_key=True)\n    first_name = Column(String)\n",
+      "utf-8"
+    );
+    const result = runCli(["init", "sqlalchemy", "--schema", "models.py"], dir);
+    expect(result.status).toBe(0);
+    expect(existsSync(path.join(dir, "seed.py"))).toBe(true);
+  });
+
+  it("a schema target with no models at all is a clear error, not a silently-empty seed script", () => {
+    writeFileSync(path.join(dir, "empty.prisma"), "// no models here\n", "utf-8");
+    const result = runCli(["init", "prisma", "--schema", "empty.prisma"], dir);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("No models found");
   });
 }, 60000);

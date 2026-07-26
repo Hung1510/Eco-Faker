@@ -23,7 +23,8 @@ import { generateAiDataset } from "./output/ai-dataset.js";
 import { computeRealismScore } from "./score.js";
 import type { Dataset, EcoFakerConfig, Locale } from "./types.js";
 
-const LOCALES: [Locale, ...Locale[]] = ["en-US", "en-GB", "es-ES", "de-DE", "fr-FR", "vi-VN"];
+import { SUPPORTED_LOCALES } from "./locales.js";
+const LOCALES = SUPPORTED_LOCALES as [string, ...string[]];
 const SCENARIO_NAMES = Object.keys(SCENARIOS) as [ScenarioName, ...ScenarioName[]];
 const FUZZ_TYPES: [FuzzMutationType, ...FuzzMutationType[]] = [
   "address_mismatch",

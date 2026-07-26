@@ -8,8 +8,11 @@ import { generate, generateRecords } from "./generator.js";
 import { buildOpenApiSpec } from "./openapi.js";
 import { runContractTest, type OpenApiDocument } from "./contract-test.js";
 import { runMutationTest, buildSeedBodiesFromDataset } from "./mutation-test.js";
-import { buildScaffold, SCAFFOLD_TARGETS, type ScaffoldTarget } from "./scaffold.js";
+import { runScenarioTest, validateScenario, type Scenario } from "./scenario-test.js";
+import { buildScaffold, SCAFFOLD_TARGETS, SIMPLE_SCAFFOLD_TARGETS, ORM_SCAFFOLD_TARGETS, type ScaffoldTarget } from "./scaffold.js";
+import { buildPrismaSeedScript, buildDrizzleSeedScript, buildSqlAlchemySeedScript } from "./orm-scaffold.js";
 import { computeRealismScore } from "./score.js";
+import { SUPPORTED_LOCALES } from "./locales.js";
 import { generateCompletion, SUPPORTED_SHELLS, type Shell, type CompletionCommandInfo } from "./completion.js";
 import { parseReadmeHeadings, resolveDocsTopic, buildDocsUrl } from "./docs.js";
 import { generateWithTargetFunnel } from "./funnel-target.js";
@@ -75,7 +78,7 @@ function addCoreGenerateOptions(cmd: Command): Command {
   return cmd
     .option("-u, --users <number>", "number of core users to generate (scaleFactor)", parseIntArg)
     .option("-s, --seed <number>", "deterministic PRNG seed", parseIntArg)
-    .option("-l, --locale <locale>", "locale (en-US, en-GB, es-ES, de-DE, fr-FR, vi-VN)")
+    .option("-l, --locale <locale>", "locale for names/addresses/currency (e.g. en-US, ja, pt-BR, ar) -- any real @faker-js/faker locale code; run `my-eco-gen locales` to list them all")
     .option("--historical-days <number>", "span of history to generate, in days", parseIntArg)
     .option("--abandonment-rate <number>", "0..1 chance a cart is abandoned", parseFloatArg)
     .option("--return-rate <number>", "0..1 chance a delivered order gets a return", parseFloatArg)
@@ -464,33 +467,91 @@ program
 program
   .command("init")
   .description(
-    "Either scaffolds a fresh project integration (`init next` / `init msw`, writes real files) or maps eco-faker's output onto a schema you already have (`init --schema <path>`). These are two different jobs sharing the same command -- see README's 'Framework scaffolding' section."
+    "Either scaffolds a fresh project integration (`init next`/`init msw`/`init prisma`/`init drizzle`/`init sqlalchemy`, writes real files) or just maps eco-faker's output onto a schema you already have (`init --schema <path>` alone, no target). See README's 'Framework scaffolding' section."
   )
-  .argument("[target]", `scaffold target: ${SCAFFOLD_TARGETS.join(" | ")} -- writes new files wiring generated data into a fresh project. Omit this and use --schema instead to map onto a schema you already have.`)
+  .argument("[target]", `scaffold target: ${SCAFFOLD_TARGETS.join(" | ")} -- writes new files wiring generated data into a fresh project. ${ORM_SCAFFOLD_TARGETS.join("/")} need --schema <path>; ${SIMPLE_SCAFFOLD_TARGETS.join("/")} don't. Omit the target entirely and use --schema alone to just produce a reviewable mapping.json without any seed script.`)
   .option(
     "--schema <path-or-url>",
-    "path to a .prisma, Drizzle (.ts/.js), or SQLAlchemy (.py) schema file -- or, with --schema-type openapi, a local .json file or a live http(s):// URL (e.g. your own API's /openapi.json). Mutually exclusive with a scaffold target."
+    "path to a .prisma, Drizzle (.ts/.js), or SQLAlchemy (.py) schema file -- or, with --schema-type openapi, a local .json file or a live http(s):// URL (e.g. your own API's /openapi.json). Required for the prisma/drizzle/sqlalchemy scaffold targets; also valid on its own (no target) for mapping-only mode."
   )
-  .option("--schema-type <type>", "prisma | drizzle | sqlalchemy | openapi (default: auto-detect from file extension)")
-  .option("-o, --output <path>", "where to write the mapping file (--schema mode only)", "./mapping.json")
-  .option("--tables <list>", "comma-separated subset of tables to map (--schema mode only)")
+  .option("--schema-type <type>", "prisma | drizzle | sqlalchemy | openapi (default: auto-detect from file extension; ignored for the prisma/drizzle/sqlalchemy scaffold targets, which already know their own type)")
+  .option("-o, --output <path>", "where to write the mapping file (mapping-only mode only)", "./mapping.json")
+  .option("--tables <list>", "comma-separated subset of tables to map (mapping-only mode only)")
   .option("--seed <number>", "seed baked into the scaffold's generated seed script (scaffold mode only, default: 1)", parseIntArg)
   .option("--force", "overwrite existing files at the scaffold's target paths (scaffold mode only)")
   .action(async (target: string | undefined, opts) => {
-    if (target && opts.schema) {
+    if (target && (SIMPLE_SCAFFOLD_TARGETS as readonly string[]).includes(target) && opts.schema) {
       console.error(
-        `Can't use both a scaffold target ("${target}") and --schema in the same call -- they're two different things: a scaffold target ("${SCAFFOLD_TARGETS.join('"/"')}") writes new files wiring eco-faker into a fresh project; --schema maps eco-faker's output onto a schema you already have.`
+        `"${target}" doesn't take --schema -- there's no schema to introspect for it. Did you mean one of ${ORM_SCAFFOLD_TARGETS.join("/")} (which do), or to drop --schema and just run "init ${target}"?`
       );
       process.exit(1);
       return;
     }
 
-    if (target) {
-      if (!(SCAFFOLD_TARGETS as readonly string[]).includes(target)) {
-        console.error(`Unknown scaffold target "${target}". Supported: ${SCAFFOLD_TARGETS.join(", ")}.`);
+    if (target && !(SCAFFOLD_TARGETS as readonly string[]).includes(target)) {
+      console.error(`Unknown scaffold target "${target}". Supported: ${SCAFFOLD_TARGETS.join(", ")}.`);
+      process.exit(1);
+      return;
+    }
+
+    if (target && (ORM_SCAFFOLD_TARGETS as readonly string[]).includes(target)) {
+      if (!opts.schema) {
+        console.error(`"init ${target}" needs a schema to introspect -- e.g. my-eco-gen init ${target} --schema ./schema.${target === "prisma" ? "prisma" : target === "drizzle" ? "ts" : "py"}`);
         process.exit(1);
         return;
       }
+
+      const schemaPath = path.resolve(process.cwd(), opts.schema as string);
+      let parsed: { models: Record<string, string[]> };
+      try {
+        const schemaSource = readFileSync(schemaPath, "utf-8");
+        parsed =
+          target === "prisma" ? parsePrismaSchema(schemaSource) : target === "drizzle" ? parseDrizzleSchema(schemaSource) : parseSqlAlchemySchema(schemaSource);
+      } catch (err) {
+        console.error(`Couldn't read/parse ${schemaPath}: ${(err as Error).message}`);
+        process.exit(1);
+        return;
+      }
+
+      const modelCount = Object.keys(parsed.models).length;
+      if (modelCount === 0) {
+        console.error(`No models found in ${schemaPath} (parsed as ${target}) -- is this a valid schema?`);
+        process.exit(1);
+        return;
+      }
+
+      const mapping = buildSchemaMapping(parsed);
+      const seed = (opts.seed as number | undefined) ?? 1;
+      const ormResult =
+        target === "prisma" ? buildPrismaSeedScript(mapping, seed) : target === "drizzle" ? buildDrizzleSeedScript(mapping, seed) : buildSqlAlchemySeedScript(mapping, seed);
+
+      const mappingOutputPath = path.resolve(process.cwd(), opts.output as string);
+      const allFiles = [...ormResult.files, { path: path.relative(process.cwd(), mappingOutputPath), contents: JSON.stringify(mapping, null, 2) }];
+
+      const conflicts = allFiles.filter((file) => existsSync(path.resolve(process.cwd(), file.path)));
+      if (conflicts.length > 0 && !opts.force) {
+        console.error(`Already exist (pass --force to overwrite):\n${conflicts.map((f) => `  ${f.path}`).join("\n")}`);
+        process.exit(1);
+        return;
+      }
+
+      for (const file of allFiles) {
+        const outputPath = path.resolve(process.cwd(), file.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, file.contents, "utf-8");
+        console.log(`Wrote ${file.path}`);
+      }
+
+      console.log(`\nParsed ${modelCount} model(s) from ${schemaPath} (${target}).`);
+      if (ormResult.skippedTables.length > 0) {
+        console.log(`No confident model match for: ${ormResult.skippedTables.join(", ")} -- skipped in the generated seed script (not guessed at).`);
+      }
+      console.log("");
+      for (const step of ormResult.nextSteps) console.log(step);
+      return;
+    }
+
+    if (target) {
       const result = buildScaffold(target as ScaffoldTarget, { seed: opts.seed as number | undefined });
 
       const conflicts = result.files.filter((file) => existsSync(path.resolve(process.cwd(), file.path)));
@@ -513,7 +574,7 @@ program
 
     if (!opts.schema) {
       console.error(
-        `Run either:\n  my-eco-gen init ${SCAFFOLD_TARGETS.join(" | init ")}   -- scaffold a fresh project integration\n  my-eco-gen init --schema <path>   -- map onto an existing Prisma/Drizzle/SQLAlchemy/OpenAPI schema`
+        `Run either:\n  my-eco-gen init ${SCAFFOLD_TARGETS.join(" | init ")}   -- scaffold a fresh project integration\n  my-eco-gen init --schema <path>   -- just map onto an existing Prisma/Drizzle/SQLAlchemy/OpenAPI schema, no seed script`
       );
       process.exit(1);
       return;
@@ -595,6 +656,14 @@ program
       }
       console.log("");
     }
+  });
+
+program
+  .command("locales")
+  .description("List every locale --locale/config.locale currently accepts.")
+  .action(() => {
+    console.log(`${SUPPORTED_LOCALES.length} supported locales (derived from the installed @faker-js/faker):\n`);
+    console.log(SUPPORTED_LOCALES.join(", "));
   });
 
 addCoreGenerateOptions(
@@ -997,6 +1066,10 @@ program
   .option("--seed <path>", "a dataset.json (from `my-eco-gen generate`) used to build real POST request bodies for --mutate's duplicate_submission/race_condition checks -- see buildSeedBodiesFromDataset")
   .option("--concurrency <number>", "concurrent identical requests fired for the race_condition check (default: 5)", parseIntArg)
   .option("--idempotency-header <name>", "header used to signal request-level idempotency (default: Idempotency-Key)")
+  .option(
+    "--scenario <path>",
+    "path to a YAML/JSON multi-step scenario file -- fires a strict, ordered sequence of real requests (create a cart, check out, ship, attempt an illegal cancel, request a return), threading real ids captured from each response into the next step. See README's 'Scenario testing' section. Combine with --seed to expose a real dataset as {{seed.*}} in the scenario file."
+  )
   .action(async (opts) => {
     const contractPath = path.resolve(process.cwd(), opts.contract as string);
     let contract: OpenApiDocument;
@@ -1071,7 +1144,58 @@ program
       }
     }
 
-    if (summary.failed > 0 || mutateFailed > 0) process.exit(1);
+    let scenarioFailed = 0;
+    if (opts.scenario) {
+      const scenarioPath = path.resolve(process.cwd(), opts.scenario as string);
+      let scenario: Scenario;
+      try {
+        const raw = readFileSync(scenarioPath, "utf-8");
+        scenario = (scenarioPath.toLowerCase().endsWith(".json") ? JSON.parse(raw) : loadYaml(raw)) as Scenario;
+      } catch (err) {
+        console.error(`Couldn't read/parse ${scenarioPath}: ${(err as Error).message}`);
+        process.exit(1);
+        return;
+      }
+
+      const validationErrors = validateScenario(scenario);
+      if (validationErrors.length > 0) {
+        console.error(`Invalid scenario file (${scenarioPath}):`);
+        for (const e of validationErrors) console.error(`  ${e}`);
+        process.exit(1);
+        return;
+      }
+
+      let seedVariables: Record<string, unknown> | undefined;
+      if (opts.seed) {
+        seedVariables = loadDatasetLike(path.resolve(process.cwd(), opts.seed as string)) as unknown as Record<string, unknown>;
+      }
+
+      console.error(`\nRunning scenario "${scenario.name}" (${scenario.steps.length} steps) against ${opts.url}...`);
+      const scenarioResult = await runScenarioTest({ baseUrl: opts.url as string, scenario, headers, seedVariables });
+      scenarioFailed = scenarioResult.failed;
+
+      for (const step of scenarioResult.steps) {
+        const label = `${step.step} (${step.method} ${step.requestPath})`;
+        if (step.ok) {
+          console.log(`ok:   ${label} -> ${step.statusActual}`);
+          continue;
+        }
+        console.log(`FAIL: ${label}`);
+        if (step.error) console.log(`      ${step.error}`);
+        if (step.statusActual !== null && step.statusExpected.length > 0 && !step.statusExpected.includes(step.statusActual)) {
+          console.log(`      status ${step.statusActual}, expected one of [${step.statusExpected.join(", ")}]`);
+        }
+        for (const mismatch of step.bodyMismatches ?? []) console.log(`      ${mismatch}`);
+      }
+      console.log(
+        `\n${scenarioResult.passed} passed, ${scenarioResult.failed} failed (--scenario)${scenarioResult.stoppedEarly ? " -- stopped at first failure, later steps skipped" : ""}.`
+      );
+      if (!opts.seed && /\{\{\s*seed\./.test(readFileSync(scenarioPath, "utf-8"))) {
+        console.log("(this scenario file references {{seed.*}} but no --seed <dataset.json> was given -- those steps will report unresolved placeholders)");
+      }
+    }
+
+    if (summary.failed > 0 || mutateFailed > 0 || scenarioFailed > 0) process.exit(1);
   });
 
 addCoreGenerateOptions(
