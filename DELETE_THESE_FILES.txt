@@ -1,3 +1,0 @@
-Delete these two files from your local checkout (they were removed in this change, not just edited):
-  src/nl-generate.ts
-  tests/nl-generate.test.ts
