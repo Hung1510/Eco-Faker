@@ -1,0 +1,101 @@
+name: "eco-faker: seed a database"
+description: >-
+  Generates a fresh eco-faker dataset and seeds a real Postgres database
+  with it in CI -- the "test with fresh data on every PR" workflow,
+  packaged as a reusable action instead of hand-copied shell steps.
+  Optionally lints the dataset before seeding and fails the job if lint
+  finds any issues.
+author: "Hung1510"
+
+inputs:
+  database-url:
+    description: >-
+      Postgres connection string to seed, e.g.
+      postgres://user:pass@localhost:5432/db. Required.
+    required: true
+  scenario:
+    description: "Named scenario preset to generate (black-friday, post-holiday-returns, flash-sale, supply-chain-crisis, steady-state). Ignored if config-file is set."
+    required: false
+    default: ""
+  users:
+    description: "Number of core users to generate. Ignored if config-file is set."
+    required: false
+    default: "200"
+  seed:
+    description: "Seed for reproducible generation. Ignored if config-file is set."
+    required: false
+    default: "1"
+  config-file:
+    description: "Path to a scenario file (--scenario-file, YAML or JSON) for full config control. Overrides scenario/users/seed if set."
+    required: false
+    default: ""
+  lint:
+    description: "Run `my-eco-gen lint` against the generated dataset before seeding, failing the action if it finds any real issue."
+    required: false
+    default: "true"
+  eco-faker-version:
+    description: "eco-faker npm version/tag to install."
+    required: false
+    default: "latest"
+
+outputs:
+  seed-file:
+    description: "Path to the generated .sql seed file that was loaded."
+    value: ${{ steps.generate.outputs.seed-file }}
+  row-counts:
+    description: "JSON object of table -> row count for the generated dataset."
+    value: ${{ steps.generate.outputs.row-counts }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install eco-faker CLI
+      shell: bash
+      run: npm install -g "eco-faker@${{ inputs.eco-faker-version }}"
+
+    - name: Generate dataset
+      id: generate
+      shell: bash
+      run: |
+        set -e
+        SEED_FILE="${{ github.workspace }}/eco-faker-seed.sql"
+        JSON_FILE="${{ github.workspace }}/eco-faker-seed.json"
+
+        # Two generate calls with the same config produce a byte-identical
+        # dataset -- eco-faker's own determinism guarantee (same seed +
+        # same config = same data) -- so linting the JSON form and seeding
+        # from the SQL form of the *same* recipe is exactly as safe as
+        # linting the SQL directly would be, without needing a separate
+        # JSON->SQL conversion step this CLI doesn't otherwise have.
+        if [ -n "${{ inputs.config-file }}" ]; then
+          my-eco-gen generate --scenario-file "${{ inputs.config-file }}" --format json --output "$JSON_FILE"
+          my-eco-gen generate --scenario-file "${{ inputs.config-file }}" --format sql --output "$SEED_FILE"
+        elif [ -n "${{ inputs.scenario }}" ]; then
+          my-eco-gen generate --scenario "${{ inputs.scenario }}" --users "${{ inputs.users }}" --seed "${{ inputs.seed }}" --format json --output "$JSON_FILE"
+          my-eco-gen generate --scenario "${{ inputs.scenario }}" --users "${{ inputs.users }}" --seed "${{ inputs.seed }}" --format sql --output "$SEED_FILE"
+        else
+          my-eco-gen generate --users "${{ inputs.users }}" --seed "${{ inputs.seed }}" --format json --output "$JSON_FILE"
+          my-eco-gen generate --users "${{ inputs.users }}" --seed "${{ inputs.seed }}" --format sql --output "$SEED_FILE"
+        fi
+
+        echo "seed-file=$SEED_FILE" >> "$GITHUB_OUTPUT"
+        ROW_COUNTS=$(node -e "const d=require('$JSON_FILE'); console.log(JSON.stringify(Object.fromEntries(Object.entries(d).filter(([,v])=>Array.isArray(v)).map(([k,v])=>[k,v.length]))))")
+        echo "row-counts=$ROW_COUNTS" >> "$GITHUB_OUTPUT"
+
+    - name: Lint dataset before seeding
+      if: inputs.lint == 'true'
+      shell: bash
+      run: my-eco-gen lint --input "${{ github.workspace }}/eco-faker-seed.json"
+
+    - name: Seed database
+      shell: bash
+      env:
+        SEED_DATABASE_URL: ${{ inputs.database-url }}
+      run: |
+        set -e
+        if ! command -v psql &> /dev/null; then
+          echo "psql not found on this runner -- install postgresql-client first (e.g. \`sudo apt-get install -y postgresql-client\` on ubuntu-latest runners)." >&2
+          exit 1
+        fi
+        psql "$SEED_DATABASE_URL" -f "${{ steps.generate.outputs.seed-file }}"
+        echo "Seeded $SEED_DATABASE_URL from ${{ steps.generate.outputs.seed-file }}."

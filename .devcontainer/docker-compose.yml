@@ -1,0 +1,50 @@
+# Deliberately self-contained, not merged with ../docker-compose.yml via
+# devcontainer.json's dockerComposeFile array, even though that would avoid
+# duplicating the `postgres` service below. Reason: the root compose file
+# also defines a one-shot `seed` service (build: ., the *production*
+# Dockerfile) that generates a dataset and INSERTs it into Postgres with
+# plain, non-idempotent `INSERT INTO` statements -- fine for its own
+# documented workflow (`docker compose up` from the repo root, once), but
+# merging it in here would mean it restarts and re-INSERTs on every dev
+# container rebuild, hitting real primary-key violations against data a
+# previous rebuild already seeded. Keeping this file standalone means
+# `docker compose up` in *this* directory only ever touches `postgres` and
+# `app` -- seeding here is instead a one-time `postCreateCommand` in
+# devcontainer.json that checks whether `orders` already has rows before
+# generating and inserting anything, so rebuilding the `app` container
+# alone (which reruns postCreateCommand, but doesn't touch the separate
+# `postgres` volume) doesn't re-insert into already-seeded data.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eco
+      POSTGRES_PASSWORD: eco
+      POSTGRES_DB: eco_faker
+    volumes:
+      - eco_faker_devcontainer_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eco -d eco_faker"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ..:/workspace:cached
+    working_dir: /workspace
+    command: sleep infinity
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: eco
+      PGPASSWORD: eco
+      PGDATABASE: eco_faker
+
+volumes:
+  eco_faker_devcontainer_pg_data:

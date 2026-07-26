@@ -50,7 +50,8 @@
     "build:static": "esbuild web-static/src/app.ts --bundle --outfile=web-static/dist/bundle.js --platform=browser --format=iife --minify && esbuild web-static/src/explorer.ts --bundle --outfile=web-static/dist/explorer-bundle.js --platform=browser --format=iife --minify",
     "smoke-test": "node scripts/smoke-test.mjs",
     "prepublishOnly": "npm run build && npm test && npm run smoke-test",
-    "benchmark": "node scripts/benchmark.mjs"
+    "benchmark": "node scripts/benchmark.mjs",
+    "perf-regression": "node scripts/perf-regression.mjs"
   },
   "dependencies": {
     "@faker-js/faker": "^9.6.0",

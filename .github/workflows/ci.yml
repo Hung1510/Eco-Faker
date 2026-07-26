@@ -235,6 +235,29 @@ jobs:
             echo "No change in benchmark-results.json -- nothing to commit."
           fi
 
+  perf-regression:
+    name: Performance regression check
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+
+      - name: Check for generation-time/memory regression against the committed baseline
+        run: npm run perf-regression
+        # Does NOT auto-commit an updated baseline the way the benchmark job
+        # above updates benchmark-results.json -- doing that here would let
+        # a real, gradual regression quietly become the new baseline on
+        # every push, defeating the point of the check. If a regression is
+        # real and expected (a new feature doing more work per call),
+        # update perf-baseline.json locally with `npm run perf-regression --
+        # --update-baseline` and commit it deliberately.
+
   adapters-e2e:
     name: Adapters end-to-end (MCP, tRPC, GraphQL, live OpenAPI inference)
     runs-on: ubuntu-latest

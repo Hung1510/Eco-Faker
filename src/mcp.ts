@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { writeFileSync, readFileSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -19,6 +19,8 @@ import { load as loadYaml } from "js-yaml";
 import { lintDataset, lintSqlAgainstDatabase } from "./lint.js";
 import { buildUserJourney, pickRichestUserId, renderJourneyHtml } from "./visualize.js";
 import { TABLE_ROUTES, applyFiltersToRecords, applySortToRecords, paginateRecords, type DatasetArrayKey } from "./serve.js";
+import { generateAiDataset } from "./output/ai-dataset.js";
+import { computeRealismScore } from "./score.js";
 import type { Dataset, EcoFakerConfig, Locale } from "./types.js";
 
 const LOCALES: [Locale, ...Locale[]] = ["en-US", "en-GB", "es-ES", "de-DE", "fr-FR", "vi-VN"];
@@ -269,6 +271,26 @@ export function createEcoFakerMcpServer(): McpServer {
   );
 
   server.registerTool(
+    "score_dataset",
+    {
+      title: "Composite 0-100 realism score for a dataset",
+      description:
+        "Computes a 0-100 realism score across five dimensions: referential_integrity, financial_consistency, temporal_plausibility, and uniqueness (all reusing lint_dataset's own rules as a continuous rate rather than a pass/fail list), plus distribution_shape (a heuristic check that order.total looks like a real right-skewed retail distribution, not suspiciously flat). Useful for objectively comparing two datasets -- before/after a config change, or two competing seeds -- instead of eyeballing them. overall is a simple unweighted mean of the five, not a tuned/validated weighting.",
+      inputSchema: {
+        datasetId: z.string().describe("A datasetId returned by generate_dataset, fuzz_dataset, or fraud_simulate."),
+      },
+    },
+    async (args) => {
+      try {
+        const dataset = requireDataset(args.datasetId);
+        return textResult(computeRealismScore(dataset));
+      } catch (err) {
+        return errorResult((err as Error).message);
+      }
+    }
+  );
+
+  server.registerTool(
     "build_event_stream",
     {
       title: "Build a chronological event stream -- user.created, cart.item_added, order.created, shipment.delivered, etc.",
@@ -408,6 +430,47 @@ export function createEcoFakerMcpServer(): McpServer {
           spanCount: result.spanCount,
           services: result.otlp.resourceSpans.map((rs) => rs.resource.attributes[0].value),
           sampleSpans: result.otlp.resourceSpans[0]?.scopeSpans[0]?.spans.slice(0, 3) ?? [],
+        });
+      } catch (err) {
+        return errorResult((err as Error).message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "generate_ai_dataset",
+    {
+      title: "Export a dataset reframed for AI-system testing",
+      description:
+        "Builds Text2SQL question/SQL/groundTruth pairs, a RAG-ready document corpus (support messages, emails, reviews), agent-testing scenarios (tool-call traces using this same query_table tool), and an LLM eval set from an existing dataset. Every value is a real, directly-computed fact -- nothing is fabricated for this export. Writes four JSONL files to disk (the full bundle can be hundreds of records, too much to return inline) and returns counts plus a small sample of each.",
+      inputSchema: {
+        datasetId: z.string().describe("A datasetId returned by generate_dataset or fuzz_dataset."),
+        outputDir: z.string().optional().describe("Where to write the four JSONL files (default: ./ai-dataset in the current working directory)."),
+        maxPerUserPairs: z.number().int().min(0).optional().describe("Cap on per-user text2sql pairs (default: 20)."),
+        maxScenariosPerSource: z.number().int().min(0).optional().describe("Cap on agent scenarios per grounding source (default: 15)."),
+      },
+    },
+    async (args) => {
+      try {
+        const dataset = requireDataset(args.datasetId);
+        const bundle = generateAiDataset(dataset, {
+          maxPerUserPairs: args.maxPerUserPairs,
+          maxScenariosPerSource: args.maxScenariosPerSource,
+        });
+        const outputDir = path.resolve(process.cwd(), args.outputDir ?? "./ai-dataset");
+        mkdirSync(outputDir, { recursive: true });
+        const jsonl = (rows: unknown[]) => rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length > 0 ? "\n" : "");
+        writeFileSync(path.join(outputDir, "text2sql.jsonl"), jsonl(bundle.text2sql), "utf-8");
+        writeFileSync(path.join(outputDir, "rag-corpus.jsonl"), jsonl(bundle.ragCorpus), "utf-8");
+        writeFileSync(path.join(outputDir, "agent-scenarios.jsonl"), jsonl(bundle.agentScenarios), "utf-8");
+        writeFileSync(path.join(outputDir, "eval-set.jsonl"), jsonl(bundle.evalSet), "utf-8");
+
+        return textResult({
+          outputDir,
+          text2sql: { count: bundle.text2sql.length, sample: bundle.text2sql.slice(0, 3) },
+          ragCorpus: { count: bundle.ragCorpus.length, sample: bundle.ragCorpus.slice(0, 3) },
+          agentScenarios: { count: bundle.agentScenarios.length, sample: bundle.agentScenarios.slice(0, 3) },
+          evalSet: { count: bundle.evalSet.length, sample: bundle.evalSet.slice(0, 3) },
         });
       } catch (err) {
         return errorResult((err as Error).message);

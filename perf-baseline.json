@@ -1,0 +1,11 @@
+{
+  "measuredAt": "2026-07-26T03:38:17.155Z",
+  "nodeVersion": "v22.22.2",
+  "scaleFactor": 1000,
+  "seed": 1,
+  "runs": 5,
+  "gcForced": false,
+  "medianGenerationMs": 1689.4,
+  "medianHeapDeltaBytes": 24135776,
+  "recordCount": 53856
+}

@@ -1555,3 +1555,213 @@ the composition: a base run vs. its `--days +30` warp, asserting every
 field on `orders[0]` matches except `createdAt`, which must differ by
 exactly 30.0 days -- verified locally before trusting it to CI, same as
 every other e2e step added this session.
+
+---
+
+## Shipped: AI dataset export (`ai-export`) (2026-07-26)
+
+A reframing, not a new generation module: `src/output/ai-dataset.ts`
+takes an already-generated dataset and reprojects it into four artifacts
+aimed at testing AI systems specifically -- Text2SQL question/SQL/
+groundTruth pairs, a RAG-ready document corpus, agent-testing scenarios,
+and an LLM eval set. No new tables added to `Dataset`, nothing here
+changes what `generate()` itself produces. Wired in three places: the
+`ai-export` CLI command, a `generate_ai_dataset` MCP tool (writes to disk
+and returns counts + a small sample, same pattern as
+`visualize_journey`), and `tests/ai-dataset.test.ts` (18 tests).
+
+Distinct scope from **Support Tickets** and **Transactional Emails &
+Review Text** above: those modeled *what a real e-commerce backend looks
+like*. This reframes the same underlying data one more time for
+*evaluating an LLM or agent against it* -- the original "AI Dataset Mode"
+roadmap item's RAG/agent-testing/Text2SQL/LLM-eval half that neither of
+those two rounds actually covered.
+
+**Text2SQL pairs are the one artifact here making a falsifiable claim --
+that a piece of real, executable SQL returns a specific real answer --
+so unlike prose generation, this was actually checked against a real SQL
+engine, not just asserted from types.** No SQL engine ships as a
+dependency, so verification used Node 22's built-in `node:sqlite`
+(experimental, absent on the Node 20.x line this project's own CI matrix
+also runs) as a one-time check before writing any pair, loading each
+generated dataset via this project's own `generate --format sql` output.
+`tests/ai-dataset.test.ts` re-runs this same check but skips gracefully
+if `node:sqlite` isn't available on the running Node version, rather than
+failing CI on a runtime that doesn't have it.
+
+**Three real bugs, all caught by that verification, before any pair was
+trusted:**
+
+1. Two pairs ("orders with no shipment", "top 5 low-rated products") had
+   no `ORDER BY` in the SQL at all. Their JS-computed groundTruth arrays
+   matched the real SQL result *as sets* but not *as sequences* -- exactly
+   the kind of thing that passes a naive equality check on small data and
+   fails silently (or non-deterministically) on a real run. Fixed by
+   adding an explicit `ORDER BY` to the SQL and sorting the JS groundTruth
+   the same way, with an explicit tie-break (`p.name ASC`) where the
+   primary sort key alone doesn't uniquely order the rows.
+2. `SUM(refund_amount)` over zero matching rows is SQL `NULL`, not `0`.
+   The groundTruth for "total refund from rejected returns" defaulted to
+   `0` via a JS `reduce`'s initial value, disagreeing with the real
+   answer the instant a dataset had zero rejected returns (which a
+   smaller `scaleFactor` run hits often). Fixed to `null` when there are
+   no matching rows, mirroring real SQL semantics instead of masking them.
+3. Floating-point summation isn't associative: SQLite's accumulation
+   order and this module's own `reduce` order can disagree in the last
+   few bits of a large sum. A larger dataset (`scaleFactor: 800`) produced
+   `4013266.9899999998` from the raw SQL sum against a groundTruth of
+   `4013266.99`. Fixed by wrapping the SQL in `ROUND(..., 2)` to match the
+   JS-rounded groundTruth -- both sides now genuinely agree instead of
+   agreeing "close enough for a human reading the number."
+
+**A fourth bug, unrelated to the text2sql pairs themselves, surfaced
+while wiring the CLI command:** `generateAiDataset` read
+`dataset.config.seed` directly for its RNG offset, but `dataset.config` is
+deliberately excluded from `generate --format json` output (see
+`output/json.ts`) -- exactly the same gotcha `analytics.ts`'s own doc
+comment already flags for its funnel computation. A dataset round-tripped
+through `generate -o file.json` then `ai-export --input file.json` (the
+single most common way this command will actually get used) crashed
+immediately on `Cannot read properties of undefined (reading 'seed')`.
+Fixed with `dataset.config?.seed ?? 0` -- this only affects *which* real
+records get sampled into pairs/scenarios, every value inside a pair is
+still a real, directly-computed fact regardless of which seed picked it.
+A regression test for this exact round trip is in the test suite now.
+
+**Agent scenarios use `query_table` -- the real generic MCP tool this
+project's own server already exposes** (`src/mcp.ts`), not an invented
+tool surface, so a real agent-testing harness can replay these
+`expectedToolCalls` against a real MCP session and compare, not just
+against documentation of what a tool call should look like.
+
+**"Chat messages" scope note carries over unchanged from Support
+Tickets:** the RAG corpus draws from support messages, emails, and
+reviews -- the same three real free-text sources, no live-chat table
+invented here either, for the same reason stated when Support Tickets
+shipped.
+
+## Shipped: stateful/mutation contract testing (`test --mutate`) (2026-07-26)
+
+The half of contract testing explicitly left unbuilt when the read-path
+engine shipped (see "Shipped: contract testing... and time-travel
+regression" above, which states plainly: "the mutation/multi-step half is
+still genuinely unbuilt, not just polished further"). New
+`src/mutation-test.ts` (`runMutationTest`, `buildSeedBodiesFromDataset`),
+wired into the existing `test` CLI command as a `--mutate` flag (plus
+`--seed <dataset.json>`, `--concurrency`, `--idempotency-header`) rather
+than a new command -- it's the same contract, the same base URL, just a
+different slice of operations against it.
+
+Five checks, matching exactly what this was scoped to cover:
+`not_found`, `unauthorized`, `duplicate_submission`, `race_condition`,
+`invalid_transition`. The `OpenApiDocument`/`OpenApiOperation` types in
+`contract-test.ts` gained an additive `requestBody` field for this --
+the read-path engine still never reads it.
+
+**`invalid_transition` is the one genuinely automatic check here, not a
+configured one.** Any schema in `contract.components.schemas` with an
+ordered `enum` on its status field -- exactly how this project's own
+`openapi.ts` already declares `orders.status: [processing, shipped,
+delivered]` -- is enough to attempt a real backward transition (PATCH the
+byId resource back to the enum's first value) and assert it's rejected
+with a 4xx. No separate state-machine description has to be hand-authored
+for this to work, because the contract's own enum ordering already
+carries that information for any OpenAPI document that declares one this
+way. The trade-off, stated plainly: a contract whose status enum isn't
+declared in real forward order, or that doesn't use an enum at all for
+its state field, gets no invalid_transition coverage at all -- there's no
+fallback heuristic for that case, and adding one that guesses at
+state-machine order from field names would risk asserting something the
+contract never actually promised.
+
+**`duplicate_submission`/`race_condition` need a real POST body to fire,
+so there's no way to run either without one.** `buildSeedBodiesFromDataset`
+matches a contract's collection path to a real eco-faker dataset table by
+its last path segment (`/api/orders` -> `orders`), best-effort and
+explicitly named as such -- a path with no matching table is left out
+of the returned map entirely, not filled with a fabricated placeholder.
+`runMutationTest` itself extends the same principle
+`runContractTest` already established for a byId path with no sample id:
+a POST path with no seed body is skipped with a clear `error` naming the
+exact reason, never silently ignored.
+
+**Duplicate/race detection works by comparing the `id` a server's own
+response returns, not by re-listing and counting.** Fire the same POST
+twice (or `N` concurrently) with an identical `Idempotency-Key`; a
+correctly-implemented server returns the same real id both times, a
+buggy one returns two different ids. This is simpler and more direct
+than a list-count-delta approach, and sidesteps needing to know how a
+given backend's list endpoint paginates or filters.
+
+**Verified against a real, hand-built HTTP server, not just
+`fetchImpl`-injected fakes -- both matter and both were used.**
+`tests/mutation-test.test.ts` uses the same in-memory `fetchImpl`
+injection technique `contract-test.test.ts` already established, with
+one compliant server and three intentionally-buggy variants (no
+idempotency handling, allows a backward status transition, skips the
+401 check), proving each real bug gets caught, not just that a
+compliant server passes. Separately, a real `node:http` server on a
+real port was run and torn down manually, and `my-eco-gen test --url
+--contract --mutate --seed` was fired at it end-to-end -- 8/8 write-path
+checks passing against the compliant version, including watching
+`race_condition` actually resolve 5 concurrent real HTTP requests to one
+resource. Both are necessary: the fake-`fetchImpl` suite is what CI
+actually runs and is what proves each specific bug class gets caught;
+the one real-server run is what confirms the whole CLI wiring (option
+parsing, header formatting, real network I/O, real concurrency) works
+outside of a mocked fetch, the same reasoning the Scenario Composer's own
+"both layers verified, neither one trusted blind" note gave for its
+fake-loader-vs-real-file split.
+
+**What's still open, stated the same way the read-path engine's own scope
+note was:** no cross-resource stateful scenario replay (create an order,
+then attempt to cancel it after a shipment already exists, spanning two
+resources in sequence) -- every check here is a single mutating request
+against a single resource, not a multi-step scenario. That's a genuinely
+larger undertaking, not a polish pass on what shipped today.
+
+---
+
+## Shipped: framework scaffolding CLI (`init next` / `init msw`) (2026-07-26)
+
+The last item from the original "Remaining items" list above -- `npx eco-faker init` for Next.js/Prisma/Drizzle/MSW. Shipped as `init next` and `init msw`, exactly the "first slice" scoping an external review of this roadmap recommended: the two frameworks covering the largest share of likely users, not all four up front. New `src/scaffold.ts` (`buildScaffold`, pure template functions, no CLI coupling), wired into the existing `init` command as an optional positional `[target]` argument, plus `tests/scaffold.test.ts` and `tests/cli-init.test.ts` (18 tests total).
+
+**A real naming collision had to be resolved, not glossed over.** `init` already existed -- `init --schema <path>` introspects an existing Prisma/Drizzle/SQLAlchemy/OpenAPI schema and writes a `mapping.json`. The word "prisma" already means something in that flow (`--schema-type prisma`). Adding a *third*, different meaning for "prisma" as a scaffold target (`init prisma` -> write a new seed.ts) would've put two unrelated meanings of the same word two lines apart in one `--help` output. Resolved by keeping `init prisma` out of scope entirely rather than disambiguating around it -- `init --schema ./schema.prisma` already covers Prisma seeding end to end, so this was never actually a gap, just a name that was already taken for something else. `init <target>` and `init --schema` are mutually exclusive and error with an explicit explanation if both are given in the same call, rather than one silently winning.
+
+**Two real bugs, both caught by actually running the generated files, not just reading the template strings:**
+
+1. The `next` scaffold's seed script used raw `JSON.stringify(dataset)` instead of this project's own `serialize(dataset, "json")` -- leaking the internal `config` field that `output/json.ts` deliberately excludes everywhere else `generate --format json` is used. A generated `eco-data.json` from the scaffold looked subtly different from every other JSON export this project produces. Caught by actually running the generated script and diffing its output's keys, not by reasoning about what it should do.
+2. The `msw` scaffold's generated handlers paginate with `?page=&pageSize=` (`toMswHandlers` reuses `serve`'s own query semantics), not the more common `?limit=&offset=`. Nothing errors on the wrong param name -- `serve`'s query API treats any unrecognized param as an exact-match filter on that field, so a request with `?limit=2` silently filters on a field named `limit` that doesn't exist and returns zero rows. Caught by firing a real `fetch()` at the generated MSW server with `?limit=` first (got an empty, statusless-looking 200) before trying `?pageSize=` (worked) -- an easy one to miss by inspecting `toMswHandlers`'s types alone, since nothing in the type signature signals this. Fixed by documenting the real convention directly in the generated `mocks/eco-handlers.ts` file, not just in this project's own README.
+
+**Verified two ways:** `tests/scaffold.test.ts` checks the template strings and actually executes the generated `next` seed script end to end against this project's own real `generate`/`serialize`, comparing its output to a directly-computed reference. `tests/cli-init.test.ts` spawns the real CLI (`npx tsx src/cli.ts init ...`) against a fresh temp directory for every branch: `init next`, `init msw`, `--seed`, an unknown target, both a target and `--schema` together, neither given, refusing to overwrite without `--force`, `--force` actually overwriting, and -- critically -- confirming the pre-existing `init --schema` e2e path this project's own CI already exercises (`.github/workflows/ci.yml`'s `init --schema http://localhost:4600/openapi.json`) still works completely unchanged.
+
+**What's still open:** `init prisma`/`init drizzle`/`init sqlalchemy` as scaffold targets (writing a real `seed.ts` that inserts through an existing ORM, distinct from the mapping.json `--schema` flow) -- genuinely useful, deliberately deferred rather than rushed into the same naming slot `--schema-type` already occupies. Any future scaffold target reusing an ORM's name needs its own resolution of the same naming tension this round resolved for "prisma," not a repeat of the collision.
+
+## Shipped: dev container + Showcase section (2026-07-26)
+
+The two "nice-to-have, low-effort" items from the same external review that recommended the scaffolding CLI above.
+
+**`.devcontainer/`** -- `Dockerfile` (Node 22, git, `psql`; distinct from the repo-root `Dockerfile`, which is a slim multi-stage *production* build that deliberately omits devDependencies), `docker-compose.yml`, `devcontainer.json`, `post-create.sh`. Deliberately **not** sharing the root `docker-compose.yml`'s `postgres` service via a merged compose file (`devcontainer.json`'s `dockerComposeFile` array supports this) -- worked through and rejected, not just skipped: the root file also defines a one-shot `seed` service using plain, non-idempotent `INSERT INTO` statements, correct for its own documented one-time workflow (`docker compose up` from the repo root) but would restart and re-insert into already-seeded data on every dev-container rebuild if merged in, hitting real primary-key violations. `.devcontainer/docker-compose.yml` is self-contained instead (`postgres` + `app` only), and the one-time seed itself checks `to_regclass('public.orders')` and row count before generating or inserting anything, so rebuilding just the `app` service doesn't reseed on top of data a previous rebuild already loaded.
+
+**Honestly flagged, not glossed over: this hasn't been run against a real Docker daemon.** This sandbox has neither Docker nor a reachable Postgres apt mirror (`apt-get install postgresql` failed on a genuine 404 from the mirror, not a permissions issue) to actually build and start the container end to end. What *was* checked: JSON/YAML/bash syntax on every file, and that every command the seed script runs (`npm install`, `npm run build`, `generate --format sql`, `psql -f`) is the same one the root `docker-compose.yml`'s own `seed` service already runs successfully in this project's own CI. The `to_regclass`-based skip-if-seeded guard and the container build itself are unverified. This is stated plainly rather than left implicit, the same way any other real limitation in this project gets called out.
+
+**Showcase section** -- filled with this project's own real, live artifacts (the two GitHub Pages demos, the npm package, the one-command Postgres seed, this same dev container) rather than left empty or padded with invented external projects, per the same review's own suggestion to "start by featuring your own examples." A second table for genuine community submissions stays separate and empty, with a clear call to action -- keeping "things eco-faker itself ships" and "things other people built with it" from being conflated in one list.
+
+## README trim: removed Testing and Showcase sections, cut narrative prose (2026-07-26)
+
+Per direct request, not a feature round. The README's `## Testing` section had grown into one single, enormous paragraph -- effectively a condensed duplicate of this file's own "Shipped" history, crammed into one run-on block rather than the numbered list it started as. Removed entirely; this file (`ROADMAP.md`) is the actual detailed history and always has been the stated source of truth for it. `## Showcase` (added just one round ago, directly above) was also removed per the same request -- noted here so this file's own history stays honest: that section shipped, then was removed, rather than pretending it was never added.
+
+Beyond the two full-section removals, every feature section's "one real bug found and fixed" / "verified N ways" narrative paragraphs were cut throughout -- that content isn't gone, it lives here, in each feature's own "Shipped" entry above, which is where it was always duplicated from. What's left in the README per feature is deliberately just: what it does, the command, and the one or two caveats that actually change how you'd use it correctly (a real footgun, a real scope boundary) -- not the story of how each one got built. 1609 lines -> 838.
+
+## Shipped: realism score (`score`), performance regression check, and a reusable GitHub Action (2026-07-26)
+
+Three of the smaller, more tractable items from the same kind of external "what's missing" review that suggested the scaffolding CLI and dev container in earlier rounds -- picked specifically because they were the cheapest/most tractable of a much longer list (a VS Code extension, an interactive schema-designer GUI, BDD/Gherkin integration, an AI-text-fill mode, data versioning/lineage, Great Expectations export, DB snapshot/restore with anonymization, OpenAPI-examples-based mocking, and CLI shell completion were all in that same list and are **not** built -- several are explicitly multi-week efforts even by that review's own estimates, and building a thin, unconvincing slice of each felt worse than doing a few properly).
+
+**`my-eco-gen score`** (`src/score.ts`) -- a composite 0-100 realism score across five dimensions. Four of them (`referential_integrity`, `financial_consistency`, `temporal_plausibility`, `uniqueness`) are deliberately not a second, parallel implementation of "is this data internally consistent" -- they reuse `lintDataset`'s own existing rules directly, just reframed as a continuous rate instead of a pass/fail list, so the two checks can never drift apart from each other. `distribution_shape` is the one genuinely new dimension: whether `orders.total` looks like a real right-skewed retail order-value distribution (coefficient of variation + skewness), stated plainly as a heuristic rather than a validated statistical test. `overall` is a simple unweighted mean of the five -- also stated plainly, not a tuned/validated weighting.
+
+**One real bug, caught by a test before it shipped:** the rate-based dimensions originally *rounded* a score like `100 * (1 - 1/13877)` to the nearest integer, which produces exactly `100` -- indistinguishable from zero real issues, on any table large enough that a single violation rounds away. A test that introduced exactly one real orphaned foreign key against ~14k total records got back a 100 and failed as intended. Fixed by flooring instead of rounding, so any nonzero issue count always registers below 100. 12 dedicated tests (`tests/score.test.ts`) plus 2 MCP tests; also exported as `computeRealismScore` and a `score_dataset` MCP tool.
+
+**`scripts/perf-regression.mjs`** -- generation-time/memory regression guard, same "run against compiled `dist/`, not `src/`" convention `benchmark.mjs` already established. Takes the median of 5 runs (a single run's timing is noisy enough on a shared CI runner to produce false failures unrelated to any real regression) and compares against a committed `perf-baseline.json`, failing if generation time regresses beyond 35% or heap delta beyond 50% (memory gets a more generous threshold since it's measured without a forced GC unless the caller passes `--expose-gc`, stated plainly as a noisier measurement). Deliberately does **not** auto-commit an updated baseline the way `benchmark.mjs` auto-commits `benchmark-results.json` -- doing that here would let a real, gradual regression quietly become the new accepted baseline on every push, which defeats the entire point of the check. Wired into `ci.yml` as its own job; `--update-baseline` to accept an expected regression deliberately, locally, by hand.
+
+**`.github/actions/seed-database/`** -- a reusable composite GitHub Action wrapping the "generate a dataset, lint it, seed a real Postgres" workflow, for other repos to consume in their own CI (`uses: Hung1510/Eco-Faker/.github/actions/seed-database@main`) instead of hand-copying shell steps. Scoped to Postgres only, stated plainly -- eco-faker's own SQL output is Postgres-flavored, so claiming MySQL/other-database support here would be broader than what's actually true. **Every shell command the action's steps run was verified for real** (installed the CLI via `npm link`, ran the exact `generate --format json` / `generate --format sql` / `lint --input` commands the action scripts, confirmed row counts and a clean lint result) -- but the action's YAML plumbing itself (composite-action schema, `$GITHUB_OUTPUT` interpolation, the whole thing running inside an actual GitHub Actions runner against a real `services: postgres:` block) has not been exercised end-to-end on real GitHub infrastructure, which this file and the action's own README both say plainly rather than implying it's been fully proven out.
+

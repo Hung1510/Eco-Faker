@@ -17,6 +17,8 @@ export interface OpenApiDocument {
 interface OpenApiOperation {
   parameters?: { name: string; in: string; required?: boolean }[];
   responses?: Record<string, { content?: { "application/json"?: { schema?: object } } }>;
+  /** Only read by mutation-test.ts's write-path checks -- the read-path engine below never looks at this. */
+  requestBody?: { content?: { "application/json"?: { schema?: object } } };
 }
 
 export interface ContractCheckResult {

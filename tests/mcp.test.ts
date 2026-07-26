@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -33,7 +33,7 @@ describe("eco-faker MCP server", () => {
     return JSON.parse(textBlock!.text!);
   }
 
-  it("lists all twelve registered tools", async () => {
+  it("lists all fourteen registered tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -41,6 +41,7 @@ describe("eco-faker MCP server", () => {
       "compute_analytics",
       "fraud_simulate",
       "fuzz_dataset",
+      "generate_ai_dataset",
       "generate_dataset",
       "generate_otel_traces",
       "generate_temporal_dataset",
@@ -48,6 +49,7 @@ describe("eco-faker MCP server", () => {
       "list_scenarios",
       "query_table",
       "resolve_scenario_file",
+      "score_dataset",
       "visualize_journey",
     ]);
   });
@@ -201,6 +203,24 @@ describe("eco-faker MCP server", () => {
     expect(customArgs.cac.assumedMonthlyMarketingSpend).toBe(9000);
   });
 
+  it("score_dataset returns a real 0-100 overall score and five dimensions matching computeRealismScore", async () => {
+    const gen = jsonFrom(
+      (await client.callTool({ name: "generate_dataset", arguments: { scenario: "black-friday", seed: 6, scaleFactor: 200 } })) as any
+    );
+    const result = jsonFrom(
+      (await client.callTool({ name: "score_dataset", arguments: { datasetId: gen.datasetId } })) as any
+    );
+    expect(result.overall).toBeGreaterThanOrEqual(0);
+    expect(result.overall).toBeLessThanOrEqual(100);
+    expect(result.dimensions.map((d: { name: string }) => d.name).sort()).toEqual([
+      "distribution_shape",
+      "financial_consistency",
+      "referential_integrity",
+      "temporal_plausibility",
+      "uniqueness",
+    ]);
+  });
+
   it("build_event_stream returns real counts, a sample, and respects eventTypes/sampleSize filters", async () => {
     const gen = jsonFrom(
       (await client.callTool({ name: "generate_dataset", arguments: { scenario: "black-friday", seed: 6, scaleFactor: 200 } })) as any
@@ -271,6 +291,25 @@ describe("eco-faker MCP server", () => {
     expect(traces.sampleSpans.length).toBeGreaterThan(0);
     expect(traces.sampleSpans[0]).toHaveProperty("traceId");
     expect(traces.sampleSpans[0]).toHaveProperty("spanId");
+  });
+
+  it("generate_ai_dataset writes four real JSONL files and returns matching counts/samples", async () => {
+    const gen = jsonFrom(
+      (await client.callTool({ name: "generate_dataset", arguments: { scenario: "black-friday", seed: 3, scaleFactor: 150 } })) as any
+    );
+    const outputDir = join(tmpdir(), `eco-faker-mcp-ai-dataset-${Date.now()}`);
+    const result = jsonFrom(
+      (await client.callTool({ name: "generate_ai_dataset", arguments: { datasetId: gen.datasetId, outputDir, maxPerUserPairs: 5 } })) as any
+    );
+    expect(result.text2sql.count).toBeGreaterThan(0);
+    expect(result.ragCorpus.count).toBeGreaterThan(0);
+    expect(result.agentScenarios.count).toBeGreaterThan(0);
+    expect(result.evalSet.count).toBe(result.text2sql.count + result.agentScenarios.count);
+    expect(result.text2sql.sample.length).toBeGreaterThan(0);
+
+    const text2sqlFile = readFileSync(join(outputDir, "text2sql.jsonl"), "utf-8").trim().split("\n");
+    expect(text2sqlFile.length).toBe(result.text2sql.count);
+    expect(JSON.parse(text2sqlFile[0])).toHaveProperty("sql");
   });
 
   it("resolve_scenario_file composes a real inherits chain and validates the result", async () => {

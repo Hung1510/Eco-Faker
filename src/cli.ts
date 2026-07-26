@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { generate, generateRecords } from "./generator.js";
 import { buildOpenApiSpec } from "./openapi.js";
 import { runContractTest, type OpenApiDocument } from "./contract-test.js";
+import { runMutationTest, buildSeedBodiesFromDataset } from "./mutation-test.js";
+import { buildScaffold, SCAFFOLD_TARGETS, type ScaffoldTarget } from "./scaffold.js";
+import { computeRealismScore } from "./score.js";
 import { generateWithTargetFunnel } from "./funnel-target.js";
 import { generateStores } from "./multi-store.js";
 import { createMockApiServer } from "./serve.js";
@@ -29,6 +32,7 @@ import { computeAnalytics } from "./analytics.js";
 import { analyticsToCsvFiles, analyticsToSql } from "./output/dashboard.js";
 import { generateElasticsearchMappings, generateElasticsearchBulkNdjson } from "./output/benchmark/elasticsearch.js";
 import { generateClickHouseDdl } from "./output/benchmark/clickhouse.js";
+import { generateAiDataset } from "./output/ai-dataset.js";
 import { buildEventStream } from "./events.js";
 import { composeScenarioFile, type ScenarioFileLoader } from "./scenario-composer.js";
 import { Faker, en } from "@faker-js/faker";
@@ -448,16 +452,61 @@ program
 program
   .command("init")
   .description(
-    "Introspect an existing schema (Prisma, Drizzle, SQLAlchemy, or a live/local OpenAPI spec) and auto-generate a mapping.json (canonical column -> your column names)."
+    "Either scaffolds a fresh project integration (`init next` / `init msw`, writes real files) or maps eco-faker's output onto a schema you already have (`init --schema <path>`). These are two different jobs sharing the same command -- see README's 'Framework scaffolding' section."
   )
-  .requiredOption(
+  .argument("[target]", `scaffold target: ${SCAFFOLD_TARGETS.join(" | ")} -- writes new files wiring generated data into a fresh project. Omit this and use --schema instead to map onto a schema you already have.`)
+  .option(
     "--schema <path-or-url>",
-    "path to a .prisma, Drizzle (.ts/.js), or SQLAlchemy (.py) schema file -- or, with --schema-type openapi, a local .json file or a live http(s):// URL (e.g. your own API's /openapi.json)"
+    "path to a .prisma, Drizzle (.ts/.js), or SQLAlchemy (.py) schema file -- or, with --schema-type openapi, a local .json file or a live http(s):// URL (e.g. your own API's /openapi.json). Mutually exclusive with a scaffold target."
   )
   .option("--schema-type <type>", "prisma | drizzle | sqlalchemy | openapi (default: auto-detect from file extension)")
-  .option("-o, --output <path>", "where to write the mapping file", "./mapping.json")
-  .option("--tables <list>", "comma-separated subset of tables to map (default: all six)")
-  .action(async (opts) => {
+  .option("-o, --output <path>", "where to write the mapping file (--schema mode only)", "./mapping.json")
+  .option("--tables <list>", "comma-separated subset of tables to map (--schema mode only)")
+  .option("--seed <number>", "seed baked into the scaffold's generated seed script (scaffold mode only, default: 1)", parseIntArg)
+  .option("--force", "overwrite existing files at the scaffold's target paths (scaffold mode only)")
+  .action(async (target: string | undefined, opts) => {
+    if (target && opts.schema) {
+      console.error(
+        `Can't use both a scaffold target ("${target}") and --schema in the same call -- they're two different things: a scaffold target ("${SCAFFOLD_TARGETS.join('"/"')}") writes new files wiring eco-faker into a fresh project; --schema maps eco-faker's output onto a schema you already have.`
+      );
+      process.exit(1);
+      return;
+    }
+
+    if (target) {
+      if (!(SCAFFOLD_TARGETS as readonly string[]).includes(target)) {
+        console.error(`Unknown scaffold target "${target}". Supported: ${SCAFFOLD_TARGETS.join(", ")}.`);
+        process.exit(1);
+        return;
+      }
+      const result = buildScaffold(target as ScaffoldTarget, { seed: opts.seed as number | undefined });
+
+      const conflicts = result.files.filter((file) => existsSync(path.resolve(process.cwd(), file.path)));
+      if (conflicts.length > 0 && !opts.force) {
+        console.error(`Already exist (pass --force to overwrite):\n${conflicts.map((f) => `  ${f.path}`).join("\n")}`);
+        process.exit(1);
+        return;
+      }
+
+      for (const file of result.files) {
+        const outputPath = path.resolve(process.cwd(), file.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, file.contents, "utf-8");
+        console.log(`Wrote ${file.path}`);
+      }
+      console.log("");
+      for (const step of result.nextSteps) console.log(step);
+      return;
+    }
+
+    if (!opts.schema) {
+      console.error(
+        `Run either:\n  my-eco-gen init ${SCAFFOLD_TARGETS.join(" | init ")}   -- scaffold a fresh project integration\n  my-eco-gen init --schema <path>   -- map onto an existing Prisma/Drizzle/SQLAlchemy/OpenAPI schema`
+      );
+      process.exit(1);
+      return;
+    }
+
     const isUrl = /^https?:\/\//.test(opts.schema);
     const schemaType = opts.schemaType ?? (isUrl ? "openapi" : detectSchemaType(opts.schema));
 
@@ -897,9 +946,32 @@ addCoreGenerateOptions(
   });
 
 program
+  .command("score")
+  .description(
+    "Compute a composite 0-100 realism score across referential integrity, financial/temporal consistency, uniqueness, and order-value distribution shape -- so you can objectively compare two datasets instead of eyeballing them."
+  )
+  .option("--input <path>", "load an existing dataset.json instead of generating a fresh one")
+  .option("-f, --format <format>", "output format: text | json", "text")
+  .action((opts) => {
+    const dataset = loadOrGenerateDataset(opts);
+    const result = computeRealismScore(dataset);
+
+    if (opts.format === "json") {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    console.log(`Realism score: ${result.overall}/100\n`);
+    const nameWidth = Math.max(...result.dimensions.map((d) => d.name.length));
+    for (const dim of result.dimensions) {
+      console.log(`  ${dim.name.padEnd(nameWidth)}  ${String(dim.score).padStart(3)}/100  (${dim.detail})`);
+    }
+  });
+
+program
   .command("test")
   .description(
-    "Fire real GET requests at a live API and assert status codes + response shapes against an OpenAPI 3.0 contract (see `openapi-export` to produce one). Read-path contract testing -- see README's 'Contract testing' section for exactly what this does and doesn't cover."
+    "Fire real GET requests at a live API and assert status codes + response shapes against an OpenAPI 3.0 contract (see `openapi-export` to produce one). Read-path contract testing -- see README's 'Contract testing' section for exactly what this does and doesn't cover. Add --mutate for the write-path checks (idempotency, race conditions, invalid status transitions, 401/404) -- see the 'Mutation testing' section."
   )
   .requiredOption("--url <url>", "base URL of the live API to test")
   .requiredOption("--contract <path>", "path to an OpenAPI 3.0 contract file (.json or .yaml/.yml)")
@@ -909,6 +981,10 @@ program
     (value: string, previous: string[]) => [...previous, value],
     [] as string[]
   )
+  .option("--mutate", "also run write-path checks: idempotency, race conditions, invalid status transitions, and 401/404. Fires real POST/PATCH requests against --url -- point this at a disposable/staging environment, not production.")
+  .option("--seed <path>", "a dataset.json (from `my-eco-gen generate`) used to build real POST request bodies for --mutate's duplicate_submission/race_condition checks -- see buildSeedBodiesFromDataset")
+  .option("--concurrency <number>", "concurrent identical requests fired for the race_condition check (default: 5)", parseIntArg)
+  .option("--idempotency-header <name>", "header used to signal request-level idempotency (default: Idempotency-Key)")
   .action(async (opts) => {
     const contractPath = path.resolve(process.cwd(), opts.contract as string);
     let contract: OpenApiDocument;
@@ -949,7 +1025,41 @@ program
     }
 
     console.log(`\n${summary.passed} passed, ${summary.failed} failed.`);
-    if (summary.failed > 0) process.exit(1);
+
+    let mutateFailed = 0;
+    if (opts.mutate) {
+      console.error(`\nRunning write-path (--mutate) checks against ${opts.url}...`);
+      let seedBodies: Record<string, Record<string, unknown>> | undefined;
+      if (opts.seed) {
+        const dataset = loadDatasetLike(path.resolve(process.cwd(), opts.seed as string));
+        seedBodies = buildSeedBodiesFromDataset(dataset as unknown as Record<string, unknown>, contract);
+      }
+      const mutationSummary = await runMutationTest({
+        baseUrl: opts.url as string,
+        contract,
+        headers,
+        seedBodies,
+        concurrency: opts.concurrency as number | undefined,
+        idempotencyHeader: opts.idempotencyHeader as string | undefined,
+      });
+      mutateFailed = mutationSummary.failed;
+
+      for (const result of mutationSummary.results) {
+        const label = `${result.check} ${result.method} ${result.path}`;
+        if (result.ok) {
+          console.log(`ok:   ${label} -- ${result.detail}`);
+          continue;
+        }
+        console.log(`FAIL: ${label} -- ${result.detail}`);
+        if (result.error) console.log(`      ${result.error}`);
+      }
+      console.log(`\n${mutationSummary.passed} passed, ${mutationSummary.failed} failed (--mutate).`);
+      if (!opts.seed) {
+        console.log("(no --seed given -- duplicate_submission/race_condition were skipped for every POST path; pass --seed <dataset.json> to run them)");
+      }
+    }
+
+    if (summary.failed > 0 || mutateFailed > 0) process.exit(1);
   });
 
 addCoreGenerateOptions(
@@ -1112,6 +1222,38 @@ program
 
     console.log(`Written ${result.traceCount} traces (${result.spanCount} spans) to ${outputPath}`);
     console.log("Send it to a real collector, e.g.: curl -X POST http://localhost:4318/v1/traces -H 'Content-Type: application/json' -d @" + outputPath);
+  });
+
+program
+  .command("ai-export")
+  .description(
+    "Export a dataset reframed for AI-system testing: Text2SQL question/SQL/groundTruth pairs, a RAG-ready document corpus (support messages, emails, reviews), agent-testing scenarios (tool-call traces using the same query_table tool the MCP server exposes), and an LLM eval set. Every value is a real, directly-computed fact about the dataset -- see README's 'AI dataset export' section for what this does and doesn't cover."
+  )
+  .option("--input <path>", "load an existing dataset.json instead of generating a fresh one")
+  .option("-o, --output <path>", "output directory (default: ./ai-dataset/)")
+  .option("--max-per-user-pairs <number>", "cap on per-user text2sql pairs (default: 20)", parseIntArg)
+  .option("--max-scenarios-per-source <number>", "cap on agent scenarios per grounding source (default: 15)", parseIntArg)
+  .action((opts) => {
+    const dataset = loadOrGenerateDataset(opts);
+    const bundle = generateAiDataset(dataset, {
+      maxPerUserPairs: opts.maxPerUserPairs as number | undefined,
+      maxScenariosPerSource: opts.maxScenariosPerSource as number | undefined,
+    });
+
+    const outputDir = path.resolve(process.cwd(), (opts.output as string) ?? "./ai-dataset");
+    mkdirSync(outputDir, { recursive: true });
+
+    const jsonl = (rows: unknown[]) => rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length > 0 ? "\n" : "");
+    writeFileSync(path.join(outputDir, "text2sql.jsonl"), jsonl(bundle.text2sql), "utf-8");
+    writeFileSync(path.join(outputDir, "rag-corpus.jsonl"), jsonl(bundle.ragCorpus), "utf-8");
+    writeFileSync(path.join(outputDir, "agent-scenarios.jsonl"), jsonl(bundle.agentScenarios), "utf-8");
+    writeFileSync(path.join(outputDir, "eval-set.jsonl"), jsonl(bundle.evalSet), "utf-8");
+
+    console.log(`Written to ${outputDir}/:`);
+    console.log(`  text2sql.jsonl        (${bundle.text2sql.length} pairs)`);
+    console.log(`  rag-corpus.jsonl      (${bundle.ragCorpus.length} documents)`);
+    console.log(`  agent-scenarios.jsonl (${bundle.agentScenarios.length} scenarios)`);
+    console.log(`  eval-set.jsonl        (${bundle.evalSet.length} items)`);
   });
 
 program
