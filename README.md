@@ -52,7 +52,6 @@ docker compose up --build
 - **Event sourcing mode** (`events`) -- chronologically-ordered event stream across all 18 tables
 - **Scenario composer** (`--scenario-file`) -- author your own reusable scenario, inheriting from built-ins or other files
 - **Funnel-targeted generation** (`--target-funnel-rate`) -- binary-searches `abandonmentRate` to hit a target conversion rate
-- **Natural-language generation** (`--prompt`) -- describe the dataset in plain English, Claude fills in config
 - **Framework scaffolding** (`init next` / `init msw` / `init prisma` / `init drizzle` / `init sqlalchemy`) -- writes real files wiring eco-faker into a project you already have, including a real ORM seed script scoped to the six core tables
 - **Mock REST API** (`serve`) -- paginated, filterable, json-server-style API, with chaos mode, API-key auth, OpenAPI spec, Postman export, live WebSocket feed, GraphQL mount
 - **Contract testing** (`test --contract`) -- fires real GET requests at a live API and checks status codes + response shapes against an OpenAPI contract
@@ -317,15 +316,6 @@ my-eco-gen generate --users 500 --target-funnel-rate 0.3
 ```
 
 Binary-searches `abandonmentRate` until the dataset's own view→purchase conversion rate lands within `--target-funnel-tolerance` (default 0.02) of the target. If unreachable at the given scale/seed, reports the closest rate found rather than silently missing.
-
-## Natural-language generation (`--prompt`)
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-my-eco-gen generate --prompt "500 users, high cart abandonment, lots of returns, holiday scenario"
-```
-
-Sends the prompt plus `config.schema.json` to the Anthropic Messages API; validates the response and retries once with the real validation error on an invalid first attempt. Explicit flags still win. `--api-key`, `--model` (or `$ECO_FAKER_MODEL`) override the key/model.
 
 ## Temporal scenario engine (`temporal`)
 

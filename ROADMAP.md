@@ -1860,3 +1860,10 @@ Prompted by a direct comparison against faker-js and faker-ruby -- the two refer
 
 69 new/changed tests across `tests/unique.test.ts`, `tests/locales.test.ts`, and an expanded `tests/locale.test.ts` (now exercises all 73 real supported locales individually, not a hand-picked sample of 6-15 -- directly because a sample is exactly what would have missed the three real bugs above).
 
+## Removed: natural-language generation (`--prompt`) (2026-07-26)
+
+Deliberately removed, not deprecated-and-left-in. `src/nl-generate.ts`, `tests/nl-generate.test.ts`, the `--prompt`/`--api-key`/`--model` options on `generate`, the CI e2e step that checked its no-API-key error path, and its README section are all gone -- not commented out, not hidden behind a flag.
+
+**Why:** it was the only feature in this project that required a paid third-party API call (the Anthropic Messages API) to function at all, billed per invocation regardless of dataset size. Every other feature -- including `ai-export`, which produces Text2SQL/RAG/agent-scenario training data -- generates purely local output with no external API dependency and no cost. A follow-up "AI generative text fill" idea (per-record LLM-written review/support-ticket text) was scoped in conversation but not built, for the same reason: cost scales with record count with no free path, which doesn't fit a tool whose entire value proposition elsewhere is free, deterministic, offline generation.
+
+If natural-language generation is ever revisited, the design constraint going forward: no feature should require a metered external API to run its core path. A local/free default with an explicit opt-in paid enhancement layered on top (not a paid-only feature) would be the bar to clear.

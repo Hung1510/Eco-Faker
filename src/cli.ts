@@ -47,7 +47,6 @@ import { generateWithTemporalProfile, TEMPORAL_PROFILES, type TemporalProfile } 
 import { generateOtelExport } from "./otel.js";
 import { load as loadYaml } from "js-yaml";
 import { main as runMcpServer } from "./mcp.js";
-import { translatePromptToConfig, DEFAULT_NL_MODEL } from "./nl-generate.js";
 import type { EcoFakerConfig, Locale } from "./types.js";
 
 const TOOL_VERSION = "0.2.1";
@@ -151,59 +150,6 @@ function resolveOverrides(opts: Record<string, unknown>): Partial<EcoFakerConfig
 }
 
 /**
- * Same precedence chain as `resolveOverrides`, but layers in config
- * translated from `--prompt` (if given) between the scenario and the
- * explicit CLI flags -- so an explicit `--users 500` still wins over
- * whatever the model inferred, the same way a named scenario's own
- * defaults already get overridden by explicit flags. Split out as its own
- * async function rather than making `resolveOverrides` itself async,
- * since every other command that calls `resolveOverrides` (fuzz, lint,
- * visualize, webhook, mail, ...) has no use for `--prompt` and stays
- * synchronous.
- */
-async function resolveOverridesWithPrompt(opts: Record<string, unknown>): Promise<Partial<EcoFakerConfig>> {
-  if (!opts.prompt) return resolveOverrides(opts);
-
-  const explicitOverrides = buildOverridesFromGenerateOpts(opts);
-  let scenarioFileOverrides: Partial<EcoFakerConfig> | undefined;
-  if (opts.scenarioFile) {
-    try {
-      const composed = composeScenarioFile(path.resolve(process.cwd(), opts.scenarioFile as string), fsScenarioLoader);
-      scenarioFileOverrides = composed.config;
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exit(1);
-    }
-  }
-  let scenarioOverrides: Partial<EcoFakerConfig> | undefined;
-  if (opts.scenario) {
-    try {
-      scenarioOverrides = resolveScenario(opts.scenario as string);
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exit(1);
-    }
-  }
-
-  console.error(`Asking ${(opts.model as string) ?? DEFAULT_NL_MODEL} to translate --prompt into config overrides...`);
-  let promptOverrides: Partial<EcoFakerConfig>;
-  try {
-    const result = await translatePromptToConfig({
-      prompt: opts.prompt as string,
-      apiKey: opts.apiKey as string | undefined,
-      model: opts.model as string | undefined,
-    });
-    promptOverrides = result.overrides;
-    console.error(`Got: ${JSON.stringify(promptOverrides)} (${result.attempts} attempt${result.attempts === 1 ? "" : "s"})`);
-  } catch (err) {
-    console.error((err as Error).message);
-    process.exit(1);
-  }
-
-  return mergeOverrides(scenarioFileOverrides, scenarioOverrides, promptOverrides, explicitOverrides);
-}
-
-/**
  * Shared by `fuzz`, `lint`, and `visualize`: load a dataset from
  * `--input <path>` (any `generate --format json` output) if given,
  * otherwise generate a fresh one from the usual `addCoreGenerateOptions`
@@ -233,19 +179,13 @@ addCoreGenerateOptions(
   .option("--fraud-types <list>", "comma-separated subset of: stolen_card,account_farming,reseller_behavior,refund_abuse,friendly_chargeback,coupon_abuse_ring (default: all six)")
   .option("--fraud-seed <number>", "seed for reproducible fraud-tag selection (default: 1)", parseIntArg, 1)
   .option(
-    "--prompt <text>",
-    "describe the dataset in plain English (e.g. \"500 users, high cart abandonment, lots of returns\") and let Claude translate it into config overrides -- explicit flags below still take precedence over anything the model infers. Requires ANTHROPIC_API_KEY (or --api-key)."
-  )
-  .option("--api-key <key>", "Anthropic API key for --prompt (default: $ANTHROPIC_API_KEY)")
-  .option("--model <model>", `Anthropic model for --prompt (default: ${DEFAULT_NL_MODEL}, or $ECO_FAKER_MODEL)`)
-  .option(
     "--target-funnel-rate <number>",
     "0..1 target view->purchase conversion rate -- calibrates abandonmentRate via search to hit it (see README's Funnel-targeted generation section for what this can and can't control)",
     parseFloatArg
   )
   .option("--target-funnel-tolerance <number>", "acceptable distance from --target-funnel-rate before the search stops (default 0.02)", parseFloatArg)
   .action(async (opts) => {
-    const overrides = await resolveOverridesWithPrompt(opts);
+    const overrides = resolveOverrides(opts);
     const referenceNow = Date.now();
 
     if (opts.snapshot) {

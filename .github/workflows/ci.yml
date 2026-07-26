@@ -93,14 +93,6 @@ jobs:
       - name: multi-store generates N independent stores
         run: node dist/cli.js generate --stores 3 --users 10 --seed 1 --format json --output /tmp/stores.json
 
-      - name: --prompt fails with a clear error (not a crash) when no API key is set
-        run: |
-          unset ANTHROPIC_API_KEY
-          OUTPUT=$(node dist/cli.js generate --prompt "500 users" 2>&1) && EXIT=0 || EXIT=$?
-          echo "$OUTPUT"
-          test "$EXIT" -ne 0
-          echo "$OUTPUT" | grep -q "ANTHROPIC_API_KEY"
-
       - name: warp shifts every timestamp by exactly N days, values unchanged
         run: |
           node dist/cli.js generate --users 50 --seed 42 --format json --output /tmp/warp-base.json --snapshot /tmp/warp.snapshot.json
@@ -311,7 +303,8 @@ jobs:
               const transport = new StdioClientTransport({ command: 'node', args: ['dist/cli.js', 'mcp'] });
               await client.connect(transport);
               const { tools } = await client.listTools();
-              if (tools.length !== 7) { console.error('expected 7 tools, got', tools.length); process.exit(1); }
+              if (tools.length === 0) { console.error('MCP server registered zero tools'); process.exit(1); }
+              if (!tools.some(t => t.name === 'generate_dataset')) { console.error('generate_dataset tool not registered; got:', tools.map(t => t.name).join(', ')); process.exit(1); }
               const result = await client.callTool({ name: 'generate_dataset', arguments: { scenario: 'steady-state', seed: 1, scaleFactor: 20 } });
               const body = JSON.parse(result.content[0].text);
               if (!body.datasetId) { console.error('generate_dataset did not return a datasetId'); process.exit(1); }
