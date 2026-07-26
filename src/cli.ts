@@ -2,12 +2,16 @@
 import { Command } from "commander";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { generate, generateRecords } from "./generator.js";
 import { buildOpenApiSpec } from "./openapi.js";
 import { runContractTest, type OpenApiDocument } from "./contract-test.js";
 import { runMutationTest, buildSeedBodiesFromDataset } from "./mutation-test.js";
 import { buildScaffold, SCAFFOLD_TARGETS, type ScaffoldTarget } from "./scaffold.js";
 import { computeRealismScore } from "./score.js";
+import { generateCompletion, SUPPORTED_SHELLS, type Shell, type CompletionCommandInfo } from "./completion.js";
+import { parseReadmeHeadings, resolveDocsTopic, buildDocsUrl } from "./docs.js";
 import { generateWithTargetFunnel } from "./funnel-target.js";
 import { generateStores } from "./multi-store.js";
 import { createMockApiServer } from "./serve.js";
@@ -52,6 +56,14 @@ interface Snapshot {
 }
 
 const program = new Command();
+
+// One level up from this file (src/cli.ts when run via tsx, dist/cli.js
+// when run from a real install) is the package root -- where README.md
+// and package.json actually live, per package.json's own "files" list.
+// Resolved this way so `docs`/`completion` find the real files whether
+// running from a source checkout or an installed package, instead of a
+// path guess that only works in one of the two.
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 program
   .name("my-eco-gen")
@@ -1387,6 +1399,78 @@ program
   )
   .action(async () => {
     await runMcpServer();
+  });
+
+program
+  .command("docs")
+  .description(
+    "Open the relevant section of the README in your browser -- e.g. `my-eco-gen docs score` opens the realism-score section. Prints the resolved URL either way, so it's still useful in a headless/CI environment where nothing actually opens."
+  )
+  .argument("[topic]", "a word or phrase to match against real README section headings (case-insensitive substring match). Omit to open the README's top.")
+  .action((topic: string | undefined) => {
+    const readmePath = path.join(packageRoot, "README.md");
+    let headings: ReturnType<typeof parseReadmeHeadings> = [];
+    try {
+      headings = parseReadmeHeadings(readFileSync(readmePath, "utf-8"));
+    } catch {
+      // README.md not found alongside this install -- fall back to just
+      // opening the repo's README page rather than failing outright.
+    }
+
+    let packageJson: { repository?: { url?: string } | string; homepage?: string } = {};
+    try {
+      packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf-8"));
+    } catch {
+      // Fine -- buildDocsUrl falls back to a hardcoded repo URL without this.
+    }
+
+    const match = topic ? resolveDocsTopic(topic, headings) : null;
+    if (topic && !match) {
+      console.error(`No README section matches "${topic}". Available sections:`);
+      for (const h of headings) console.error(`  ${h.text}`);
+      process.exit(1);
+    }
+
+    const url = buildDocsUrl(packageJson, match);
+    console.log(url);
+
+    // spawn (not exec) with stdio: "ignore" and detached: true, then
+    // unref() -- exec()'s internal stdout/stderr pipes kept this process's
+    // event loop alive even after unref()ing the ChildProcess itself, so
+    // the CLI hung indefinitely in a non-TTY context (a real CLI-spawning
+    // test hung until killed before this was fixed). This is the actual
+    // fire-and-forget pattern: no piped stdio to keep anything open, a
+    // detached child that survives this process exiting, and unref() so
+    // this process doesn't wait around for it either.
+    const [command, args] =
+      process.platform === "win32"
+        ? ["cmd", ["/c", "start", "", url]]
+        : process.platform === "darwin"
+        ? ["open", [url]]
+        : ["xdg-open", [url]];
+    try {
+      const child = spawn(command, args, { detached: true, stdio: "ignore" });
+      child.on("error", (err) => console.error(`(couldn't auto-open a browser -- open the URL above manually: ${err.message})`));
+      child.unref();
+    } catch (err) {
+      console.error(`(couldn't auto-open a browser -- open the URL above manually: ${(err as Error).message})`);
+    }
+  });
+
+program
+  .command("completion")
+  .description(`Print a shell completion script for bash/zsh/fish, derived from the real, current set of subcommands and flags. Load it with: eval "$(my-eco-gen completion <shell>)"`)
+  .argument("<shell>", `one of: ${SUPPORTED_SHELLS.join(", ")}`)
+  .action((shell: string) => {
+    if (!(SUPPORTED_SHELLS as readonly string[]).includes(shell)) {
+      console.error(`Unknown shell "${shell}". Supported: ${SUPPORTED_SHELLS.join(", ")}.`);
+      process.exit(1);
+    }
+    const commands: CompletionCommandInfo[] = program.commands.map((c) => ({
+      name: c.name(),
+      flags: c.options.map((o) => o.long).filter((long): long is string => Boolean(long)),
+    }));
+    process.stdout.write(generateCompletion(shell as Shell, "my-eco-gen", commands));
   });
 
 program.parse();

@@ -69,6 +69,8 @@ docker compose up --build
 - **Anomaly injection & fraud simulation** -- rare, high-value edge cases and fraud risk signals
 - **Schema introspection** (`init --schema`) -- maps onto an existing Prisma/Drizzle/SQLAlchemy/OpenAPI schema
 - **High-volume stream mode** (`--stream`) -- NDJSON straight to stdout, flat memory regardless of scale
+- **VS Code extension** -- generate a dataset or scaffold a Next.js/MSW integration from the Command Palette, no terminal needed (`vscode-extension/`)
+- **CLI docs & shell completion** (`docs` / `completion`) -- opens the relevant README section in your browser; generates real bash/zsh/fish completion scripts derived from the live command list
 - **Dev container** (`.devcontainer/`) -- Node 22 + pre-seeded Postgres, zero-setup "Reopen in Container"
 - **Three output formats** -- JSON, SQL, CSV; deterministic given the same seed + reference time
 
@@ -705,7 +707,7 @@ fly launch --dockerfile Dockerfile.serve --copy-config --now
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` on every push/PR/nightly: typecheck + unit tests + build (Node 20.x/22.x), smoke tests, static-bundle check, CLI e2e, mock-API e2e, a performance-regression check against a committed baseline (`scripts/perf-regression.mjs`). `.github/workflows/pages.yml` deploys `web-static/` to GitHub Pages.
+`.github/workflows/ci.yml` on every push/PR/nightly: typecheck + unit tests + build (Node 20.x/22.x), smoke tests, static-bundle check, CLI e2e, mock-API e2e, a performance-regression check against a committed baseline (`scripts/perf-regression.mjs`), and the VS Code extension's own compile/test/build/package (a real `.vsix`, validated but not published). `.github/workflows/pages.yml` deploys `web-static/` to GitHub Pages.
 
 **Using eco-faker in your own CI:** `.github/actions/seed-database/` is a reusable GitHub Action -- generates a dataset, optionally lints it, and seeds a real Postgres database in one step (`uses: Hung1510/Eco-Faker/.github/actions/seed-database@main`). See its own [README](./.github/actions/seed-database/README.md) for inputs/outputs and a full example.
 
@@ -792,6 +794,8 @@ src/
   mutation-test.ts           write-path/mutation contract testing engine (`test --mutate`)
   scaffold.ts                 templates for `init next` / `init msw`
   score.ts                   realism-score engine (`score`)
+  docs.ts                     README heading parsing + GitHub-slug replication (`docs`)
+  completion.ts                bash/zsh/fish completion script generation (`completion`)
   index.ts                  full public API (Node)
   browser.ts                 browser-safe subset (excludes serve.ts and diff.ts)
   modules/
@@ -825,6 +829,9 @@ scripts/
 Dockerfile                 multi-stage build: compile -> slim runtime with psql baked in
 docker-compose.yml         postgres + one-shot seed service
 .devcontainer/              Node 22 + psql dev image, self-contained postgres+app compose
+vscode-extension/           standalone VS Code extension package (own package.json/tsconfig)
+  src/extension.ts           command registration, QuickPick/progress UI (untested in a real Extension Host)
+  src/cliRunner.ts            pure CLI-invocation building + spawn logic (unit- and integration-tested)
 ```
 
 ## Performance
@@ -835,6 +842,36 @@ Batch generation is O(n) in `scaleFactor` with no repeated I/O. `--stream` mode 
 npm run build && npm run benchmark
 npm run perf-regression   # fails if generation time/memory regress beyond a stored baseline
 ```
+
+## VS Code extension
+
+A UI in front of the CLI, for generating data or scaffolding a project without leaving the editor -- see [`vscode-extension/`](./vscode-extension/) for the source and its own README.
+
+Commands (Command Palette, `Cmd/Ctrl+Shift+P`): **eco-faker: Generate Dataset** (prompts for users/scenario/format/output path), **eco-faker: Scaffold Next.js Integration**, **eco-faker: Scaffold MSW Integration**. All three shell out to the real `my-eco-gen` CLI (or `npx eco-faker` if it's not installed globally) -- not a reimplementation of any generation logic.
+
+```bash
+cd vscode-extension
+npm install
+npm test          # real CLI spawned end-to-end via node:test, no vscode module involved
+npm run package   # produces an installable .vsix via @vscode/vsce
+```
+
+First slice, scoped deliberately: generate + scaffold commands only, no in-editor table viewer or relationship explorer yet (a natural next step, not attempted here). The extension's own logic that builds CLI invocations is unit-tested directly and its real spawn behavior is verified end-to-end (see its README) -- but `extension.ts`'s actual VS Code UI (QuickPicks, progress notifications) hasn't been run inside a real Extension Host, since that needs downloading the actual VS Code binary from a host this environment can't reach. Stated plainly rather than implied otherwise.
+
+## CLI docs & shell completion
+
+```bash
+my-eco-gen docs score          # prints (and tries to open) the realism-score README section
+my-eco-gen docs mutate         # matches "Mutation testing", not "Contract testing"
+my-eco-gen docs                # no topic -- opens the README's top
+
+eval "$(my-eco-gen completion bash)"    # or: zsh / fish
+my-eco-gen completion bash >> ~/.bashrc # persist it
+```
+
+`docs <topic>` case-insensitively matches `topic` against the real README's own `##`/`###` headings (parsed at runtime, not a hand-maintained topic list) and prints the resolved GitHub URL, then tries to open it in your default browser -- the URL is printed either way, so this is still useful headless. No match prints the real list of available sections instead of guessing.
+
+`completion <bash|zsh|fish>` generates a completion script from the real, current set of subcommands and their real flags (introspected off the live Commander program, not a second hand-maintained copy that could drift the moment a flag changes).
 
 ## Roadmap
 

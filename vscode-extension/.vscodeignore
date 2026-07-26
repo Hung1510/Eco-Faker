@@ -1,0 +1,9 @@
+src/**
+tests/**
+dist-test/**
+tsconfig.json
+tsconfig.test.json
+esbuild.mjs
+.gitignore
+*.vsix
+node_modules/**

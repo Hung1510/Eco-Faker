@@ -5,3 +5,5 @@ web-static/dist/
 .DS_Store
 coverage/
 .env
+vscode-extension/dist-test/
+*.vsix
