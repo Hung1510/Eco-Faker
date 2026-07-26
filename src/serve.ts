@@ -216,7 +216,7 @@ export function paginateRecords(rows: Record<string, unknown>[], query: Record<s
  * key, no scopes/expiry -- this is a mock server, the point is to make
  * frontend code exercise its own 401-handling path, not to model real auth.
  */
-function authMiddleware(apiKey: string) {
+export function authMiddleware(apiKey: string) {
   return (req: Request, res: Response, next: NextFunction) => {
     const header = req.headers.authorization;
     if (header !== `Bearer ${apiKey}`) {
@@ -234,7 +234,7 @@ function authMiddleware(apiKey: string) {
  * (rate-limit > error > latency > normal), so the three chaos modes are
  * mutually exclusive on any given request.
  */
-function chaosMiddleware(options: ChaosOptions) {
+export function chaosMiddleware(options: ChaosOptions) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const roll = Math.random();
 

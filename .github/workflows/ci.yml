@@ -196,6 +196,38 @@ jobs:
             console.log('postman collection OK:', file.item.length, 'top-level items');
           "
 
+      - name: serve --openapi-examples serves real spec examples, not generated data
+        run: |
+          cat > /tmp/example-spec.json << 'SPEC'
+          {
+            "openapi": "3.0.0",
+            "paths": {
+              "/widgets": {
+                "get": { "responses": { "200": { "content": { "application/json": { "example": [{ "id": "w1" }] } } } } }
+              },
+              "/widgets/{id}": {
+                "get": { "responses": { "200": { "content": { "application/json": { "schema": { "example": { "id": "w1" } } } } } } }
+              },
+              "/widgets/no-example": {
+                "get": { "responses": { "200": { "content": { "application/json": { "schema": { "type": "object" } } } } } }
+              }
+            }
+          }
+          SPEC
+          node dist/cli.js serve --openapi-examples /tmp/example-spec.json --port 4505 &
+          SERVER_PID=$!
+          sleep 2
+          LIST=$(curl -sf "http://localhost:4505/widgets")
+          echo "$LIST" | grep -q '"id":"w1"'
+          # Static sibling of the /widgets/{id} param route must NOT be
+          # swallowed by it -- the real bug this feature's own tests caught
+          # by running a server, checked again here against the real CLI.
+          NOEXAMPLE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:4505/widgets/no-example")
+          NOTINSPEC_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:4505/not-in-spec")
+          kill $SERVER_PID
+          test "$NOEXAMPLE_STATUS" = "501"
+          test "$NOTINSPEC_STATUS" = "404"
+
   benchmark:
     name: Benchmark (generation speed + relational integrity)
     runs-on: ubuntu-latest

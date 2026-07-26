@@ -36,6 +36,49 @@ docker compose up --build
 # Postgres @ localhost:5432 (eco/eco/eco_faker) seeded with a Black Friday dataset
 ```
 
+## Run it from source: clone, build, test, generate (~2 minutes)
+
+For anyone who'd rather clone the repo and see it work end-to-end than install the published package -- everything below is copy-pasteable, in the order you'd actually run it. No need to read anything past this section just to see what eco-faker does; jump into [Features](#features) whenever you're ready for the rest.
+
+**1. Clone and install:**
+```bash
+git clone https://github.com/Hung1510/Eco-Faker.git
+cd Eco-Faker
+npm install
+```
+
+**2. Build:**
+```bash
+npm run build
+```
+
+**3. Run the full test suite** -- confirms everything actually works on your machine before you rely on any of it:
+```bash
+npm test
+```
+
+**4. Generate your first dataset:**
+```bash
+node dist/cli.js generate --users 50 --seed 1 --scenario black-friday --format json --output ./eco-data.json
+```
+(Once installed globally with `npm install -g eco-faker`, every `node dist/cli.js <command>` below is just `my-eco-gen <command>`.)
+
+**5. Spin up a live mock API against it and hit a real endpoint:**
+```bash
+node dist/cli.js serve --users 50 --seed 1 --port 4000 &
+curl "http://localhost:4000/api/orders?status=delivered&pageSize=5"
+```
+
+**6. Run the same full verification pass CI runs, end to end:**
+```bash
+npx tsc --noEmit -p tsconfig.json   # typecheck
+npm test                             # full unit test suite
+npm run build                        # compile
+npm run smoke-test                   # runs dist/ against every scenario preset, checks referential integrity
+```
+
+That's the whole loop: clone -> install -> build -> test -> generate -> serve. Everything from here on is the full feature-by-feature reference -- skim the list below for what interests you, or use `my-eco-gen docs <topic>` (see [CLI docs & shell completion](#cli-docs--shell-completion)) to jump straight to a specific section's docs from the terminal.
+
 ## Features
 
 - **Product catalog** -- categories, brands, suppliers, products with variants; every cart/order line item resolves to a real product, reused across many orders
@@ -52,8 +95,10 @@ docker compose up --build
 - **Event sourcing mode** (`events`) -- chronologically-ordered event stream across all 18 tables
 - **Scenario composer** (`--scenario-file`) -- author your own reusable scenario, inheriting from built-ins or other files
 - **Funnel-targeted generation** (`--target-funnel-rate`) -- binary-searches `abandonmentRate` to hit a target conversion rate
+- **Data versioning** (`version save` / `list` / `diff` / `branch` / `log`) -- a local named store of dataset recipes, with branch lineage and by-name diffing
 - **Framework scaffolding** (`init next` / `init msw` / `init prisma` / `init drizzle` / `init sqlalchemy`) -- writes real files wiring eco-faker into a project you already have, including a real ORM seed script scoped to the six core tables
 - **Mock REST API** (`serve`) -- paginated, filterable, json-server-style API, with chaos mode, API-key auth, OpenAPI spec, Postman export, live WebSocket feed, GraphQL mount
+- **OpenAPI-examples mocking** (`serve --openapi-examples`) -- an entirely different `serve` mode: serves a real OpenAPI 3.x document's own declared response examples verbatim, no dataset generation
 - **Contract testing** (`test --contract`) -- fires real GET requests at a live API and checks status codes + response shapes against an OpenAPI contract
 - **Mutation testing** (`test --mutate`) -- fires real POST/PATCH requests at a live API: idempotency, race conditions, invalid status transitions (auto-detected from the contract's own ordered enums), 401/404
 - **Scenario testing** (`test --scenario`) -- a strict, ordered, cross-resource sequence of real requests (cart → checkout → ship → illegal cancel → return), threading real captured ids between steps, asserting the actual business-logic outcome at each stage
@@ -388,6 +433,16 @@ my-eco-gen serve --users 300 --api-key my-secret-key
 
 **Postman export:** `--postman [--postman-output <path>]` writes a v2.1 collection and serves it at `GET /postman.json`.
 
+## OpenAPI-examples mocking (`serve --openapi-examples`)
+
+```bash
+my-eco-gen serve --openapi-examples ./my-api-spec.yaml --port 4000
+```
+
+An entirely different mode of `serve`: instead of generating a fake e-commerce dataset, this reads a real OpenAPI 3.x document (local `.json`/`.yaml`/`.yml`, or a live `http(s)://` URL) and serves *its own declared response examples* verbatim -- for mocking an API you're designing or consuming, using example payloads you (or its authors) already wrote in the spec. Every dataset-shaping option (`--users`, `--seed`, `--scenario`, ...) is ignored in this mode; `--port`/`--chaos`/`--api-key`/`--quiet` still apply.
+
+For each declared path+method, exactly one example is resolved, in priority order: a response's `example` -> the first (alphabetically) entry of its `examples` map -> its `schema.example`. A path+method declared in the spec with none of the three gets a real `501` saying so -- never a fabricated response. Anything not declared in the spec at all gets a `404`. This is a stateless, single-happy-path mock, not a request-aware state machine -- it can't tell "the 200 case" from "the 404 case" for the same operation from the request alone, so it always serves the lowest declared `2xx` (falling back to `default`) regardless of what you send it.
+
 ## MSW (Mock Service Worker) adapter
 
 ```bash
@@ -714,6 +769,18 @@ my-eco-gen warp --snapshot ./bug-42.snapshot.json --days +30 --diff
 ```
 
 Reproduces a snapshot with every timestamp shifted by N days, everything else identical -- for testing time-relative logic (overdue checks, SLA windows) against a fixed scenario at a different point in wall-clock time. `--diff` reuses the `diff` engine to compare original vs. warped.
+
+## Data versioning (`version save` / `list` / `diff` / `branch` / `log`)
+
+```bash
+my-eco-gen version save baseline --users 200 --seed 1 --message "before the promo"
+my-eco-gen version branch baseline promo-test --users 200 --seed 1 --abandonment-rate 0.2 --message "lower abandonment during promo"
+my-eco-gen version diff baseline promo-test
+my-eco-gen version log promo-test
+my-eco-gen version list
+```
+
+A local, named store of dataset *recipes* (`.eco-faker/versions/<name>.json` -- same `config` + `referenceNow` shape as `generate --snapshot`, not the generated data itself), so you can save a run under a memorable name instead of a file path, branch a new named version from an existing one (explicit flags override the parent's values, same precedence as everywhere else), diff any two by name, and trace a version's full lineage back to its root. `--dir` points any of these at a different store location; default is `.eco-faker/versions` in the current directory.
 
 ## Docker: seed a real Postgres database
 
