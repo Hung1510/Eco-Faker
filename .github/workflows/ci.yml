@@ -34,11 +34,11 @@ jobs:
       - name: Typecheck
         run: npx tsc -p tsconfig.json --noEmit
 
-      - name: Unit tests
-        run: npm test
-
       - name: Build
         run: npm run build
+
+      - name: Unit tests
+        run: npm test
 
       - name: Smoke test (dist/, every scenario preset)
         run: npm run smoke-test

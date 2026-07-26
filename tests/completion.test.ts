@@ -5,6 +5,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { generateBashCompletion, generateZshCompletion, generateFishCompletion, generateCompletion, SUPPORTED_SHELLS } from "../src/completion.js";
 
+// execSync always runs through `/bin/sh -c`, so when a shell binary isn't
+// installed, /bin/sh itself starts fine and just reports "not found" with
+// exit status 127 -- there's no ENOENT, since spawning /bin/sh succeeded.
+// Check availability up front instead of trying to sniff it out of a caught
+// exec error, and skip via vitest's own skipIf rather than an early return
+// buried in the test body.
+function isShellAvailable(shell: string): boolean {
+  try {
+    execSync(`command -v ${shell}`, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const hasZsh = isShellAvailable("zsh");
+const hasFish = isShellAvailable("fish");
+
 const commands = [
   { name: "generate", flags: ["--users", "--seed", "--format", "--output"] },
   { name: "score", flags: ["--input", "--format"] },
@@ -61,16 +79,11 @@ describe("generateBashCompletion", () => {
 });
 
 describe("generateZshCompletion", () => {
-  it("is valid zsh syntax", () => {
+  it.skipIf(!hasZsh)("is valid zsh syntax", () => {
     const script = generateZshCompletion("my-eco-gen", commands);
     const scriptPath = path.join(tmpdir(), `eco-completion-test-${Date.now()}.zsh`);
     writeFileSync(scriptPath, script, "utf-8");
-    try {
-      expect(() => execSync(`zsh -n ${scriptPath}`)).not.toThrow();
-    } catch (err) {
-      if ((err as { code?: string }).code === "ENOENT") return; // zsh not installed on this runner -- skip, don't fail
-      throw err;
-    }
+    expect(() => execSync(`zsh -n ${scriptPath}`)).not.toThrow();
   });
 
   it("includes every real command name and its real flags in the generated case statement", () => {
@@ -86,23 +99,12 @@ describe("generateFishCompletion", () => {
   const scriptPath = path.join(tmpdir(), `eco-completion-test-${Date.now()}.fish`);
   writeFileSync(scriptPath, script, "utf-8");
 
-  it("is valid fish syntax", () => {
-    try {
-      expect(() => execSync(`fish -n ${scriptPath}`)).not.toThrow();
-    } catch (err) {
-      if ((err as { code?: string }).code === "ENOENT") return; // fish not installed on this runner -- skip, don't fail
-      throw err;
-    }
+  it.skipIf(!hasFish)("is valid fish syntax", () => {
+    expect(() => execSync(`fish -n ${scriptPath}`)).not.toThrow();
   });
 
-  it("actually completes a real subcommand name via fish's non-interactive `complete -C`", () => {
-    let output: string;
-    try {
-      output = execSync(`fish -c "source ${scriptPath}; complete -C 'my-eco-gen sc'"`).toString().trim();
-    } catch (err) {
-      if ((err as { code?: string }).code === "ENOENT") return; // fish not installed on this runner -- skip, don't fail
-      throw err;
-    }
+  it.skipIf(!hasFish)("actually completes a real subcommand name via fish's non-interactive `complete -C`", () => {
+    const output = execSync(`fish -c "source ${scriptPath}; complete -C 'my-eco-gen sc'"`).toString().trim();
     expect(output.split("\n").sort()).toEqual(["scenarios", "score"]);
   });
 });
