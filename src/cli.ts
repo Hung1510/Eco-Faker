@@ -48,6 +48,7 @@ import { applyFraudSimulation, summarizeFraudSignals, type FraudType } from "./f
 import { computeAnalytics } from "./analytics.js";
 import { analyticsToCsvFiles, analyticsToSql } from "./output/dashboard.js";
 import { generateElasticsearchMappings, generateElasticsearchBulkNdjson } from "./output/benchmark/elasticsearch.js";
+import { generateGreatExpectationsSuites } from "./output/great-expectations.js";
 import { generateClickHouseDdl } from "./output/benchmark/clickhouse.js";
 import { generateAiDataset } from "./output/ai-dataset.js";
 import { buildEventStream } from "./events.js";
@@ -634,6 +635,7 @@ addCoreGenerateOptions(
   .option("--graphql", "mount POST /graphql, executing queries against the same dataset via the GraphQL adapter (requires the optional 'graphql' package)")
   .option("--postman-output <path>", "where to write the Postman collection file", "./eco-faker.postman_collection.json")
   .option("--live", "also open a WebSocket at /live broadcasting a steady drip of dataset events")
+  .option("--live-sse", "also expose GET /live/sse (Server-Sent Events) broadcasting the same feed -- for clients/environments that can't do a WebSocket upgrade")
   .option("--live-interval-ms <number>", "ms between live broadcasts", parseIntArg, 800)
   .option("--quiet", "suppress the per-request console log line (meaning header is still sent)")
   .option(
@@ -701,6 +703,7 @@ addCoreGenerateOptions(
       graphql: Boolean(opts.graphql),
       quiet: Boolean(opts.quiet),
       port,
+      liveSse: opts.liveSse ? { overrides, referenceNow, intervalMs: opts.liveIntervalMs as number } : undefined,
     });
 
     if (opts.postman) {
@@ -721,6 +724,7 @@ addCoreGenerateOptions(
       if (opts.chaos) console.log(`  chaos mode ON: latency/500/429 injected into /api/* responses`);
       if (opts.apiKey) console.log(`  auth ON: send "Authorization: Bearer ${opts.apiKey}" or every /api/* request gets a 401`);
       if (opts.live) console.log(`  live feed: ws://localhost:${port}/live`);
+      if (opts.liveSse) console.log(`  live feed (SSE): GET http://localhost:${port}/live/sse  (curl -N works)`);
       if (!opts.quiet) console.log(`  request log ON: plain-English status meanings printed per request (--quiet to silence)`);
     });
 
@@ -1483,6 +1487,30 @@ program
       process.exit(1);
       return;
     }
+  });
+
+program
+  .command("ge-export")
+  .description(
+    "Export a real Great Expectations expectation suite (one per table) derived from an actual generated dataset -- column existence/order, not-null, uniqueness, inferred type, numeric range, and enum-like value sets, every one checked against real observed values, never assumed from a column's name. A starting baseline meant to be reviewed/loosened, the same role GE's own built-in profilers play -- not a finished production suite."
+  )
+  .option("--input <path>", "load an existing dataset.json instead of generating a fresh one")
+  .option("-o, --output <path>", "output directory (default: ./ge-export/)")
+  .action((opts) => {
+    const dataset = loadOrGenerateDataset(opts);
+    const outputDir = path.resolve(process.cwd(), (opts.output as string) ?? "./ge-export");
+    mkdirSync(outputDir, { recursive: true });
+
+    const suites = generateGreatExpectationsSuites(dataset);
+    let count = 0;
+    for (const [table, suite] of Object.entries(suites)) {
+      writeFileSync(path.join(outputDir, `${table}.json`), JSON.stringify(suite, null, 2) + "\n", "utf-8");
+      count++;
+    }
+    console.log(`Written ${count} expectation suites to ${outputDir}/`);
+    console.log(`Drop these into a real GE project's expectations/ directory, e.g.:`);
+    console.log(`  cp ${outputDir}/orders.json great_expectations/expectations/orders.json`);
+    console.log(`Then validate with GE's own CLI/Python API against a batch loaded from this same dataset (or generate --format csv for a batch to load).`);
   });
 
 program

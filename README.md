@@ -91,6 +91,7 @@ That's the whole loop: clone -> install -> build -> test -> generate -> serve. E
 - **OpenTelemetry export** (`otel-export`) -- real OTLP/JSON traces, a `checkout` trace per order and `fulfill_shipment` trace per shipment
 - **Analytics dashboard** (`dashboard`) -- daily revenue, funnel, retention cohorts, LTV, CAC as CSV/SQL/JSON
 - **Benchmark export** (`benchmark-export`) -- real Elasticsearch Bulk NDJSON + mappings, and ClickHouse DDL
+- **Great Expectations export** (`ge-export`) -- one real expectation suite per table, every assertion derived from actual observed values, never a hardcoded assumption
 - **AI dataset export** (`ai-export`) -- Text2SQL pairs, RAG corpus, agent-testing scenarios, LLM eval set
 - **Event sourcing mode** (`events`) -- chronologically-ordered event stream across all 18 tables
 - **Scenario composer** (`--scenario-file`) -- author your own reusable scenario, inheriting from built-ins or other files
@@ -282,6 +283,16 @@ my-eco-gen benchmark-export --input ./eco-data.json --target clickhouse --output
 
 `elasticsearch` writes real Bulk API NDJSON + inferred index mappings per table. `clickhouse` writes real DDL (`ENGINE = MergeTree()`); the data payload reuses the existing CSV output. Postgres isn't a target here -- `generate --format sql`/`csv` already cover it.
 
+## Great Expectations export (`ge-export`)
+
+```bash
+my-eco-gen generate --users 500 --output ./eco-data.json
+my-eco-gen ge-export --input ./eco-data.json --output ./ge-export/
+cp ./ge-export/orders.json great_expectations/expectations/orders.json
+```
+
+Writes one real [Great Expectations](https://greatexpectations.io/) expectation suite per table, every expectation derived from this exact dataset's actual generated values -- column existence and order from the real columns present, not-null only where every real row genuinely has one, uniqueness only for non-float columns where it's actually true (a money/measurement value being unique in a small sample is chance, not a business rule -- `total`/`subtotal`/etc. never get it even when they happen to qualify), inferred type, numeric range from the real observed min/max, and an enum-style `value_set` for string columns with few enough distinct values relative to row count. This is a starting baseline meant to be reviewed and loosened -- the same role GE's own built-in profilers already play -- not a finished production suite; `expect_table_row_count_to_be_between` in particular pins the exact row count of this one export and will need widening for anything but revalidating this same data.
+
 ## Data quality / realism score (`score`)
 
 ```bash
@@ -430,6 +441,8 @@ my-eco-gen serve --users 300 --api-key my-secret-key
 ```
 
 **Live WebSocket feed:** `--live --live-interval-ms 500` opens `ws://localhost:4000/live`.
+
+**Live feed over plain HTTP:** `--live-sse` opens `GET /live/sse` (Server-Sent Events) broadcasting the exact same event feed -- for anything that can't do a WebSocket upgrade (`curl -N http://localhost:4000/live/sse`, a browser's built-in `EventSource`, a restrictive proxy/gateway that blocks WS but passes through a long-lived HTTP response fine). Each connecting client gets its own independent cursor, unlike the WebSocket feed's single shared broadcast loop.
 
 **Postman export:** `--postman [--postman-output <path>]` writes a v2.1 collection and serves it at `GET /postman.json`.
 
@@ -914,7 +927,7 @@ src/
   serve.ts                 mock REST API: chaos mode, API-key auth, /openapi.json, /postman.json
   openapi.ts                OpenAPI 3.0 spec builder for the mock API
   postman.ts                 Postman Collection v2.1 export
-  live.ts                   WebSocket /live feed
+  live.ts                   WebSocket /live feed + GET /live/sse (Server-Sent Events, same feed)
   webhook.ts                webhook event builder + paced replay
   diff.ts                   dataset/snapshot structural diffing
   contract-test.ts           read-path contract testing engine (`test --contract`)

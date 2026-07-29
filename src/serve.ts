@@ -1,7 +1,8 @@
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
-import type { Dataset } from "./types.js";
+import type { Dataset, EcoFakerConfig } from "./types.js";
 import { buildOpenApiSpec } from "./openapi.js";
 import { buildPostmanCollection } from "./postman.js";
+import { attachLiveFeedSSE } from "./live.js";
 
 export type DatasetArrayKey = Exclude<keyof Dataset, "config">;
 
@@ -153,6 +154,20 @@ export interface ServeOptions {
   graphql?: boolean;
   /** Port, only used to fill in the OpenAPI `servers` entry -- doesn't bind anything itself. */
   port?: number;
+  /**
+   * Mount GET /live/sse (Server-Sent Events). Needs the original
+   * `overrides`/`referenceNow` that built this dataset -- not the
+   * `Dataset` itself -- since the underlying event list is built via
+   * `buildWebhookEvents(overrides, referenceNow)`, which regenerates
+   * records itself rather than reading them off an already-built
+   * `Dataset` object. Mounted here (inside `createMockApiServer`, before
+   * its own final catch-all route) rather than by the caller adding a
+   * route to the returned `app` afterward -- a route added after this
+   * function returns would sit after that catch-all in Express's
+   * registration order and never be reached (confirmed directly: this is
+   * a real bug this project's own testing caught, not a hypothetical).
+   */
+  liveSse?: { overrides: Partial<EcoFakerConfig>; referenceNow: number; intervalMs?: number; eventTypes?: Set<string> };
 }
 
 function applyFilters(rows: Record<string, unknown>[], query: Request["query"]): Record<string, unknown>[] {
@@ -377,6 +392,10 @@ export function createMockApiServer(dataset: Dataset, options: ServeOptions = {}
   }
 
   app.use("/api", apiRouter);
+
+  if (options.liveSse) {
+    attachLiveFeedSSE(app, options.liveSse.overrides, options.liveSse.referenceNow, { intervalMs: options.liveSse.intervalMs, eventTypes: options.liveSse.eventTypes });
+  }
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: "Unknown route.", availableRoutes: Object.keys(TABLE_ROUTES).map((r) => `/api/${r}`) });

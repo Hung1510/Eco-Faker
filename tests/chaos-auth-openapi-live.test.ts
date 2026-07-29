@@ -221,6 +221,109 @@ describe("live WebSocket feed", () => {
     });
 
     expect(received[0].type).toBe("_meta");
-    expect(received.slice(1).every((e) => typeof e.type === "string" && typeof e.timestamp === "string")).toBe(true);
+  expect(received.slice(1).every((e) => typeof e.type === "string" && typeof e.timestamp === "string")).toBe(true);
+  });
+});
+
+describe("live SSE feed (GET /live/sse)", () => {
+  async function collectSSEFrames(port: number, windowMs: number): Promise<string[]> {
+    const http = await import("node:http");
+    return new Promise((resolve, reject) => {
+      const chunks: string[] = [];
+      const req = http.get({ host: "127.0.0.1", port, path: "/live/sse" }, (res) => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`expected 200, got ${res.statusCode}`));
+          return;
+        }
+        res.on("data", (d) => chunks.push(d.toString()));
+      });
+      req.on("error", reject);
+      setTimeout(() => {
+        req.destroy();
+        resolve(
+          chunks
+            .join("")
+            .split("\n\n")
+            .filter((s) => s.trim().startsWith("data:"))
+        );
+      }, windowMs);
+    });
+  }
+
+  it("streams the same real, chronologically-shaped events the WebSocket feed does, over plain HTTP", async () => {
+    const overrides = { seed: 1, scaleFactor: 50 };
+    const referenceNow = Date.parse("2026-01-01T00:00:00Z");
+    const app = createMockApiServer(generate(overrides), { quiet: true, liveSse: { overrides, referenceNow, intervalMs: 20 } });
+    const { port, close } = await withServer(app);
+    try {
+      const frames = await collectSSEFrames(port, 250);
+      expect(frames.length).toBeGreaterThan(1);
+      const parsed = frames.map((f) => JSON.parse(f.replace(/^data:\s*/, "")));
+      expect(parsed[0].type).toBe("_meta");
+      expect(parsed.slice(1).every((e) => typeof e.type === "string" && typeof e.timestamp === "string")).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
+  it("sets a real text/event-stream content type, not the default JSON one", async () => {
+    const overrides = { seed: 1, scaleFactor: 50 };
+    const referenceNow = Date.now();
+    const app = createMockApiServer(generate(overrides), { quiet: true, liveSse: { overrides, referenceNow, intervalMs: 20 } });
+    const { port, close } = await withServer(app);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/live/sse`);
+      expect(res.headers.get("content-type")).toMatch(/text\/event-stream/);
+      res.body?.cancel();
+    } finally {
+      close();
+    }
+  });
+
+  it("regression: /live/sse is actually reachable and NOT swallowed by createMockApiServer's own final catch-all route", async () => {
+    // A route added to the returned `app` object AFTER createMockApiServer
+    // finishes would sit after its internal catch-all in Express's
+    // registration order and get a 404 no matter what path it declares --
+    // caught directly by testing this, not assumed from reading the code.
+    // liveSse must be mounted INSIDE createMockApiServer, before that
+    // catch-all, which is exactly what this test confirms by hitting the
+    // real route on a real running server.
+    const overrides = { seed: 1, scaleFactor: 30 };
+    const app = createMockApiServer(generate(overrides), { quiet: true, liveSse: { overrides, referenceNow: Date.now(), intervalMs: 20 } });
+    const { port, close } = await withServer(app);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/live/sse`);
+      expect(res.status).toBe(200);
+      res.body?.cancel();
+    } finally {
+      close();
+    }
+  });
+
+  it("without liveSse configured, GET /live/sse correctly 404s like any other unknown route", async () => {
+    const app = createMockApiServer(dataset, { quiet: true });
+    const { port, close } = await withServer(app);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/live/sse`);
+      expect(res.status).toBe(404);
+      await res.json();
+    } finally {
+      close();
+    }
+  });
+
+  it("normal /api/* routes are completely unaffected by liveSse being enabled", async () => {
+    const overrides = { seed: 1, scaleFactor: 30 };
+    const ds = generate(overrides);
+    const app = createMockApiServer(ds, { quiet: true, liveSse: { overrides, referenceNow: Date.now(), intervalMs: 20 } });
+    const { port, close } = await withServer(app);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/orders`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(Array.isArray(body.data)).toBe(true);
+    } finally {
+      close();
+    }
   });
 });

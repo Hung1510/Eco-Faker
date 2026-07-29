@@ -1,5 +1,6 @@
 import type { Server as HttpServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
+import type { Express, Request, Response } from "express";
 import { buildWebhookEvents, type WebhookEvent } from "./webhook.js";
 import type { EcoFakerConfig } from "./types.js";
 
@@ -55,4 +56,49 @@ export function attachLiveFeed(
   wss.on("close", () => clearInterval(timer));
 
   return wss;
+}
+
+/**
+ * Same live feed as `attachLiveFeed` (identical event list, identical
+ * cadence), over Server-Sent Events instead of a WebSocket -- for any
+ * client/environment that can do a plain HTTP GET but not a WebSocket
+ * upgrade: `curl -N`, a browser's built-in `EventSource`, a restrictive
+ * corporate proxy or serverless/API-gateway setup that blocks WS
+ * upgrades outright but passes through a long-lived HTTP response fine.
+ *
+ * Registered as a normal Express route (`GET /live/sse`), so -- unlike
+ * `attachLiveFeed`, which attaches to the raw `http.Server` returned by
+ * `app.listen()` -- this must be called on the `Express` app itself,
+ * before `.listen()`. Each connecting client gets its own independent
+ * cursor and interval timer (not a single feed shared across every SSE
+ * client the way the WebSocket feed shares one broadcast loop across all
+ * its clients) -- there's no efficient way to `res.write()` a fan-out to
+ * many independent HTTP responses the way `wss.clients` iteration does
+ * for WebSocket, and at this mock server's realistic connection counts
+ * that isn't worth the added complexity.
+ */
+export function attachLiveFeedSSE(app: Express, overrides: Partial<EcoFakerConfig>, referenceNow: number, options: LiveFeedOptions = {}): void {
+  const intervalMs = options.intervalMs ?? 800;
+  const allEvents = buildWebhookEvents(overrides, referenceNow);
+  const events: WebhookEvent[] = options.eventTypes ? allEvents.filter((e) => options.eventTypes!.has(e.type)) : allEvents;
+
+  app.get("/live/sse", (req: Request, res: Response) => {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no", // tells nginx (if fronting this) not to buffer the stream
+    });
+    res.write(`data: ${JSON.stringify({ type: "_meta", message: `Connected. Replaying ${events.length} events at ${intervalMs}ms intervals.` })}\n\n`);
+
+    let cursor = 0;
+    const timer = setInterval(() => {
+      if (events.length === 0) return;
+      const event = events[cursor % events.length];
+      cursor++;
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }, intervalMs);
+
+    req.on("close", () => clearInterval(timer));
+  });
 }
