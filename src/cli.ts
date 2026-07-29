@@ -9,6 +9,7 @@ import { buildOpenApiSpec } from "./openapi.js";
 import { runContractTest, type OpenApiDocument } from "./contract-test.js";
 import { runMutationTest, buildSeedBodiesFromDataset } from "./mutation-test.js";
 import { runScenarioTest, validateScenario, type Scenario } from "./scenario-test.js";
+import { parseFeature, GherkinParseError } from "./gherkin.js";
 import { buildScaffold, SCAFFOLD_TARGETS, SIMPLE_SCAFFOLD_TARGETS, ORM_SCAFFOLD_TARGETS, type ScaffoldTarget } from "./scaffold.js";
 import { buildPrismaSeedScript, buildDrizzleSeedScript, buildSqlAlchemySeedScript } from "./orm-scaffold.js";
 import { computeRealismScore } from "./score.js";
@@ -49,6 +50,7 @@ import { computeAnalytics } from "./analytics.js";
 import { analyticsToCsvFiles, analyticsToSql } from "./output/dashboard.js";
 import { generateElasticsearchMappings, generateElasticsearchBulkNdjson } from "./output/benchmark/elasticsearch.js";
 import { generateGreatExpectationsSuites } from "./output/great-expectations.js";
+import { snapshotDatabase } from "./db-snapshot.js";
 import { generateClickHouseDdl } from "./output/benchmark/clickhouse.js";
 import { generateAiDataset } from "./output/ai-dataset.js";
 import { buildEventStream } from "./events.js";
@@ -1222,6 +1224,10 @@ program
     "--scenario <path>",
     "path to a YAML/JSON multi-step scenario file -- fires a strict, ordered sequence of real requests (create a cart, check out, ship, attempt an illegal cancel, request a return), threading real ids captured from each response into the next step. See README's 'Scenario testing' section. Combine with --seed to expose a real dataset as {{seed.*}} in the scenario file."
   )
+  .option(
+    "--gherkin <path>",
+    "path to a real .feature (Gherkin) file -- Given/When/Then steps translated into the same scenario engine --scenario uses. Fixed step vocabulary (see README's 'BDD / Gherkin testing' section); a .feature file with multiple Scenario: blocks runs each one. Combine with --seed the same way --scenario does."
+  )
   .action(async (opts) => {
     const contractPath = path.resolve(process.cwd(), opts.contract as string);
     let contract: OpenApiDocument;
@@ -1347,7 +1353,65 @@ program
       }
     }
 
-    if (summary.failed > 0 || mutateFailed > 0 || scenarioFailed > 0) process.exit(1);
+    let gherkinFailed = 0;
+    if (opts.gherkin) {
+      const featurePath = path.resolve(process.cwd(), opts.gherkin as string);
+      let parsedFeature: ReturnType<typeof parseFeature>;
+      try {
+        parsedFeature = parseFeature(readFileSync(featurePath, "utf-8"));
+      } catch (err) {
+        if (err instanceof GherkinParseError) {
+          console.error(`Couldn't parse ${featurePath} as Gherkin:\n${err.message}`);
+        } else {
+          console.error(`Couldn't read ${featurePath}: ${(err as Error).message}`);
+        }
+        process.exit(1);
+        return;
+      }
+
+      let seedVariables: Record<string, unknown> | undefined;
+      if (opts.seed) {
+        seedVariables = loadDatasetLike(path.resolve(process.cwd(), opts.seed as string)) as unknown as Record<string, unknown>;
+      }
+
+      console.error(`\nRunning ${parsedFeature.scenarios.length} scenario(s) from "${parsedFeature.featureName || featurePath}" against ${opts.url}...`);
+      for (const scenario of parsedFeature.scenarios) {
+        const validationErrors = validateScenario(scenario);
+        if (validationErrors.length > 0) {
+          console.error(`Invalid scenario "${scenario.name}" (translated from ${featurePath}):`);
+          for (const e of validationErrors) console.error(`  ${e}`);
+          gherkinFailed++;
+          continue;
+        }
+
+        console.error(`\n  Scenario: ${scenario.name} (${scenario.steps.length} step(s))`);
+        const scenarioResult = await runScenarioTest({ baseUrl: opts.url as string, scenario, headers, seedVariables });
+        gherkinFailed += scenarioResult.failed;
+
+        for (const step of scenarioResult.steps) {
+          const label = `${step.step} (${step.method} ${step.requestPath})`;
+          if (step.ok) {
+            console.log(`  ok:   ${label} -> ${step.statusActual}`);
+            continue;
+          }
+          console.log(`  FAIL: ${label}`);
+          if (step.error) console.log(`        ${step.error}`);
+          if (step.statusActual !== null && step.statusExpected.length > 0 && !step.statusExpected.includes(step.statusActual)) {
+            console.log(`        status ${step.statusActual}, expected one of [${step.statusExpected.join(", ")}]`);
+          }
+          for (const mismatch of step.bodyMismatches ?? []) console.log(`        ${mismatch}`);
+        }
+        console.log(
+          `  ${scenarioResult.passed} passed, ${scenarioResult.failed} failed${scenarioResult.stoppedEarly ? " -- stopped at first failure, later steps skipped" : ""}.`
+        );
+      }
+      console.log(`\n${parsedFeature.scenarios.length} scenario(s) run (--gherkin), ${gherkinFailed} step failure(s) total.`);
+      if (!opts.seed && /\{\{\s*seed\./.test(readFileSync(featurePath, "utf-8"))) {
+        console.log("(this feature file references {{seed.*}} but no --seed <dataset.json> was given -- those steps will report unresolved placeholders)");
+      }
+    }
+
+    if (summary.failed > 0 || mutateFailed > 0 || scenarioFailed > 0 || gherkinFailed > 0) process.exit(1);
   });
 
 addCoreGenerateOptions(
@@ -1511,6 +1575,48 @@ program
     console.log(`Drop these into a real GE project's expectations/ directory, e.g.:`);
     console.log(`  cp ${outputDir}/orders.json great_expectations/expectations/orders.json`);
     console.log(`Then validate with GE's own CLI/Python API against a batch loaded from this same dataset (or generate --format csv for a batch to load).`);
+  });
+
+program
+  .command("db-snapshot")
+  .description(
+    "Connect to a REAL live Postgres database (read-only -- SELECT only, no writes) and snapshot real rows into safe-to-share JSON, with PII-shaped columns (email, phone, ssn, name, address, date of birth, credit card, generic secrets) deterministically pseudonymized by column-name heuristic. The same real value always maps to the same fake replacement (never stored reversibly), so repeated values stay consistent with each other in the output. Requires the optional 'pg' package (npm install pg)."
+  )
+  .requiredOption("--db-url <url>", "Postgres connection string, e.g. postgresql://user:pass@host:5432/dbname")
+  .option("--tables <list>", "comma-separated table names to snapshot (default: every base table in --schema)")
+  .option("--schema <name>", "Postgres schema to read from", "public")
+  .option("--row-limit <number>", "max rows read per table -- a safety cap, not a representative sample (default: 1000)", parseIntArg, 1000)
+  .option("--anonymize <list>", "comma-separated table.column pairs to force-anonymize even though the name heuristic didn't flag them")
+  .option("--exclude-anonymize <list>", "comma-separated table.column pairs to leave alone even though the name heuristic flagged them -- e.g. a 'name' column that's actually a product name, not a person's")
+  .option("-o, --output <path>", "output directory (default: ./db-snapshot/)")
+  .action(async (opts) => {
+    const outputDir = path.resolve(process.cwd(), (opts.output as string) ?? "./db-snapshot");
+    mkdirSync(outputDir, { recursive: true });
+
+    const parseList = (value: string | undefined): Set<string> | undefined => (value ? new Set(value.split(",").map((s) => s.trim())) : undefined);
+
+    let results: Awaited<ReturnType<typeof snapshotDatabase>>;
+    try {
+      results = await snapshotDatabase(opts.dbUrl as string, {
+        tables: (opts.tables as string | undefined)?.split(",").map((s) => s.trim()),
+        schema: opts.schema as string,
+        rowLimit: opts.rowLimit as number,
+        includeColumns: parseList(opts.anonymize as string | undefined),
+        excludeColumns: parseList(opts.excludeAnonymize as string | undefined),
+      });
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+      return;
+    }
+
+    for (const table of results) {
+      writeFileSync(path.join(outputDir, `${table.table}.json`), JSON.stringify(table.rows, null, 2) + "\n", "utf-8");
+      const anonNote = table.anonymizedColumns.length > 0 ? `anonymized: ${table.anonymizedColumns.join(", ")}` : "no PII-shaped columns detected";
+      console.log(`${table.table}: ${table.rowCount} rows written (${anonNote})`);
+    }
+    console.log(`\nWritten ${results.length} tables to ${outputDir}/`);
+    console.log(`Review --exclude-anonymize/--anonymize before trusting the auto-detection on your own schema -- it's a name heuristic, not a guarantee.`);
   });
 
 program

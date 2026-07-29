@@ -92,6 +92,7 @@ That's the whole loop: clone -> install -> build -> test -> generate -> serve. E
 - **Analytics dashboard** (`dashboard`) -- daily revenue, funnel, retention cohorts, LTV, CAC as CSV/SQL/JSON
 - **Benchmark export** (`benchmark-export`) -- real Elasticsearch Bulk NDJSON + mappings, and ClickHouse DDL
 - **Great Expectations export** (`ge-export`) -- one real expectation suite per table, every assertion derived from actual observed values, never a hardcoded assumption
+- **DB snapshot + anonymization** (`db-snapshot`) -- connects to a real live Postgres database and writes deterministically-pseudonymized real rows to JSON, safe to hand to staging/dev/CI
 - **AI dataset export** (`ai-export`) -- Text2SQL pairs, RAG corpus, agent-testing scenarios, LLM eval set
 - **Event sourcing mode** (`events`) -- chronologically-ordered event stream across all 18 tables
 - **Scenario composer** (`--scenario-file`) -- author your own reusable scenario, inheriting from built-ins or other files
@@ -103,6 +104,7 @@ That's the whole loop: clone -> install -> build -> test -> generate -> serve. E
 - **Contract testing** (`test --contract`) -- fires real GET requests at a live API and checks status codes + response shapes against an OpenAPI contract
 - **Mutation testing** (`test --mutate`) -- fires real POST/PATCH requests at a live API: idempotency, race conditions, invalid status transitions (auto-detected from the contract's own ordered enums), 401/404
 - **Scenario testing** (`test --scenario`) -- a strict, ordered, cross-resource sequence of real requests (cart → checkout → ship → illegal cancel → return), threading real captured ids between steps, asserting the actual business-logic outcome at each stage
+- **BDD / Gherkin testing** (`test --gherkin`) -- the same scenario engine, authored in real `.feature` syntax; a fixed step vocabulary, not a general-purpose Cucumber runner
 - **MSW / tRPC / GraphQL / React Query / Apollo Client adapters** -- same dataset, same filter/sort/paginate semantics, no server required
 - **MCP server** (`mcp`) -- generate/query/fuzz/lint/visualize as tools any MCP client can call directly
 - **Semantic fuzzing** (`fuzz`) -- schema-valid but logically-impossible mutations, finding bugs schema validation can't catch
@@ -665,6 +667,38 @@ The scenario stops at the first failed step -- a later step referencing a value 
 
 Deliberately doesn't also validate each step's response against the OpenAPI contract's declared schema the way `test --contract`'s read-path checks do -- mapping a resolved request path with real ids substituted in back to the contract's own templated path is real work on its own, and `expectStatus`/`expectBody` already cover the actual point of this feature (the business-logic outcome at each stage). A stated future enhancement, not attempted this round.
 
+### BDD / Gherkin testing (`test --gherkin`)
+
+The same scenario engine above, authored in real `.feature` (Gherkin) syntax instead of YAML/JSON:
+
+```gherkin
+Feature: Order lifecycle
+
+  Scenario: Fetch a real order
+    Given I GET "/api/orders?pageSize=1" and call it "listOrders"
+    Then the response status should be 200
+    And I capture "data.0.id" as "firstOrderId"
+
+  Scenario: A nonexistent order returns 404
+    When I GET "/api/orders/does-not-exist" and call it "fetchMissing"
+    Then the response status should be 404
+```
+
+```bash
+my-eco-gen test --url https://api.example.com --contract ./your-openapi.json --gherkin ./order-lifecycle.feature
+```
+
+A `.feature` file translates directly into the same `Scenario`/`ScenarioStep` shape `--scenario` runs -- every step actually fires a real request and is really asserted, not just parsed. Multiple `Scenario:` blocks in one file each run independently. `{{seed.*}}`/`{{stepName.field}}` placeholders work identically to `--scenario`, including with `--seed <dataset.json>`.
+
+This is a small, **fixed step vocabulary** -- not a general-purpose Gherkin runner with user-registrable step definitions the way real Cucumber/cucumber-js works (that's arbitrary custom code per step, a fundamentally different and much bigger feature):
+
+- `I <GET|POST|PUT|PATCH|DELETE> "<path>" [with body <json>] [and call it "<name>"]`
+- `the response status should be <code>`
+- `the response field "<dot.path>" should be <json-value>` -- the value is parsed as real JSON, so strings need their own quotes (`should be "delivered"`), numbers/booleans/null don't (`should be 129.99`, `should be true`)
+- `I capture "<dot.path>" as "<localName>"`
+
+`Given`/`When`/`Then`/`And`/`But` are all treated identically -- only the step *text* is matched. Not supported in this first slice, with a clear parse error (not a silent misparse) if encountered: tags (`@smoke`), `Background:` (repeat shared setup in each `Scenario:` instead), `Scenario Outline:`/`Examples:` (write out each case as its own plain `Scenario:` instead), and data tables/doc strings.
+
 ## Multi-store / multi-tenant mode
 
 ```bash
@@ -804,6 +838,20 @@ psql -h localhost -U eco -d eco_faker -c "select status, count(*) from orders gr
 
 Brings up `postgres` (real Postgres 16) and `seed` (builds the CLI, generates a `black-friday` dataset, loads it via `psql`, exits). Edit `docker-compose.yml`'s `seed.command` to change scenario/users/format.
 
+## DB snapshot + anonymization (`db-snapshot`)
+
+```bash
+npm install pg   # optional dependency, same as lint --sql --db-url
+my-eco-gen db-snapshot --db-url "postgresql://user:pass@host:5432/proddb" --output ./snapshot/
+my-eco-gen db-snapshot --db-url "..." --tables users,orders --exclude-anonymize "products.name" --output ./snapshot/
+```
+
+Connects to a REAL live Postgres database, read-only (`SELECT` only, no writes -- nothing here can mutate anything), and writes real rows to JSON, one file per table, with PII-shaped columns (email, phone, SSN, first/last/full name, address, date of birth, credit card, generic secrets like passwords/API keys) deterministically pseudonymized by column-*name* heuristic. The same real value always maps to the same fake replacement (the fake is derived from a SHA-256 hash of the real value, never stored reversibly), so repeated real values -- the same customer's email showing up in multiple tables -- stay consistent with each other in the output.
+
+Stated plainly, because it's a real, demonstrated limitation, not a hypothetical one: this is a column-*name* heuristic, not content inspection. A column literally named `name` holding a product name -- not a person's -- genuinely gets anonymized into a fake person's name by default (confirmed against a real database during this feature's own development). `--exclude-anonymize table.column` is the escape hatch for exactly that; `--anonymize table.column` is the reverse, forcing anonymization on a real PII column the heuristic misses (a company-specific field like `slack_handle`, say). Review both before trusting the auto-detection on your own schema.
+
+Also stated plainly: `--row-limit` (default 1000 per table) reads whichever rows Postgres happens to return first with no `ORDER BY` -- not a representative sample, and not guaranteed to keep cross-table foreign keys intact if a referenced row falls outside another table's own limit. Fine for a small database; raise the limit (or drop it per-table) for a large one.
+
 ## Dev container (`.devcontainer/`)
 
 Open in VS Code (or any [Dev Containers](https://containers.dev)-compatible tool), "Reopen in Container" -- Node 22, git, `psql`, and a real, pre-seeded Postgres. First creation runs `npm install`, `npm run build`, and a one-time seed guarded by a row-count check (so rebuilding the `app` container doesn't re-insert into already-seeded data). Self-contained, not merged with the root `docker-compose.yml` (which has its own one-shot, non-idempotent `seed` service meant for a separate workflow).
@@ -933,6 +981,7 @@ src/
   contract-test.ts           read-path contract testing engine (`test --contract`)
   mutation-test.ts           write-path/mutation contract testing engine (`test --mutate`)
   scenario-test.ts            cross-resource, multi-step scenario testing engine (`test --scenario`)
+  gherkin.ts                  parses real .feature files into the same scenario engine (`test --gherkin`)
   scaffold.ts                 templates for `init next` / `init msw`
   orm-scaffold.ts              real ORM seed scripts for `init prisma`/`init drizzle`/`init sqlalchemy`
   score.ts                   realism-score engine (`score`)
