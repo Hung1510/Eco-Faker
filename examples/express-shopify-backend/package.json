@@ -1,0 +1,16 @@
+{
+  "name": "example-express-shopify-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tutorial companion project: an Express REST API (products, customers, orders, shipments, returns) backed by eco-faker. See TUTORIAL.md.",
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "dev": "node src/server.mjs",
+    "ci-smoke-test": "node scripts/ci-smoke-test.mjs"
+  },
+  "dependencies": {
+    "eco-faker": "file:../..",
+    "express": "^5.2.1"
+  }
+}

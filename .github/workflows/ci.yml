@@ -313,6 +313,31 @@ jobs:
       - name: Package a real .vsix (validates the manifest, doesn't publish anywhere)
         run: npx vsce package
 
+  examples:
+    name: Examples (tutorial companion projects run against local source)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+      - run: npm ci
+      - run: npm run build
+
+      - name: express-shopify-backend -- generate + serve + smoke-test
+        working-directory: examples/express-shopify-backend
+        run: |
+          npm run generate
+          npm run ci-smoke-test
+
+      - name: nextjs-app-router -- build + start + smoke-test
+        working-directory: examples/nextjs-app-router
+        run: |
+          npm run build
+          npm run ci-smoke-test
+
   adapters-e2e:
     name: Adapters end-to-end (MCP, tRPC, GraphQL, live OpenAPI inference)
     runs-on: ubuntu-latest

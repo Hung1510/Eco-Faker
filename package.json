@@ -41,6 +41,9 @@
     "LICENSE",
     "assets"
   ],
+  "workspaces": [
+    "examples/*"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",

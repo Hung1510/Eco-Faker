@@ -1,0 +1,27 @@
+{
+  "name": "example-nextjs-app-router",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tutorial companion project: products/orders rendered via React Server Components and exposed via Route Handlers, backed by eco-faker. See TUTORIAL.md.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "ci-smoke-test": "node scripts/ci-smoke-test.mjs"
+  },
+  "dependencies": {
+    "eco-faker": "file:../..",
+    "next": "16.2.12",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.12",
+    "typescript": "^5"
+  }
+}
