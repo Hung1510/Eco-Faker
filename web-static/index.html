@@ -49,6 +49,13 @@
     background: rgba(245, 158, 11, 0.15); color: var(--accent2); border: 1px solid rgba(245, 158, 11, 0.35);
   }
   .elapsed { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); margin: 8px 0; text-transform: none; letter-spacing: 0; }
+  .checkbox-row input { accent-color: var(--accent); }
+  .config-output {
+    background: #0f1115; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text);
+    white-space: pre-wrap; word-break: break-word; margin: 0; max-height: 220px; overflow-y: auto;
+  }
 </style>
 </head>
 <body>
@@ -77,12 +84,25 @@
       <label>Multi-package rate: <span class="value" id="val-multiPackageRate">0.10</span></label>
       <input type="range" id="multiPackageRate" min="0" max="1" step="0.01" value="0.1" />
 
+      <label style="margin-top: 22px;">Optional data modules</label>
+      <label class="checkbox-row"><input type="checkbox" id="mod-recommendationData" checked /> Recommendation data (views/searches/wishlist/ratings)</label>
+      <label class="checkbox-row"><input type="checkbox" id="mod-inventorySimulation" checked /> Inventory simulation (warehouses/replenishment/stockouts)</label>
+      <label class="checkbox-row"><input type="checkbox" id="mod-supportTickets" checked /> Support tickets + messages</label>
+      <label class="checkbox-row"><input type="checkbox" id="mod-emailMessages" checked /> Transactional emails</label>
+      <label class="checkbox-row"><input type="checkbox" id="mod-anomalies" checked /> Anomaly injection</label>
+      <label>Catalog size: <span class="value" id="val-catalogSize">150</span></label>
+      <input type="range" id="catalogSize" min="10" max="1000" step="10" value="150" />
+
       <div class="stats" id="stats"></div>
       <div class="anomaly-badges" id="anomalies"></div>
       <div class="elapsed" id="elapsed"></div>
     </div>
 
     <div class="charts">
+      <div class="panel wide">
+        <div class="chart-title">Equivalent config / CLI command <span style="font-weight: normal; color: var(--muted); text-transform: none; letter-spacing: 0;">-- reflects only what's actually toggleable above; every other <code>EcoFakerConfig</code> field keeps its default</span></div>
+        <pre id="configOutput" class="config-output"></pre>
+      </div>
       <div class="panel">
         <div class="chart-title">Cart status breakdown</div>
         <canvas id="cartChart"></canvas>

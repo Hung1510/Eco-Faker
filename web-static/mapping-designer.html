@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>eco-faker -- schema mapping designer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --accent: #6ee7b7;
+    --accent2: #f59e0b;
+    --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header { padding: 24px 32px 8px; }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  header a { color: var(--accent); }
+  .scope-note {
+    margin: 10px 32px 0; padding: 10px 14px; background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; font-size: 13px; color: var(--accent2);
+  }
+  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px 32px 40px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+  .panel h2 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  textarea {
+    width: 100%; height: 320px; background: #0f1115; color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+    resize: vertical;
+  }
+  .models { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .model-chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: #0f1115; border: 1px solid var(--border); color: var(--text); }
+  .parse-error { color: var(--bad); font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
+  .table-select { width: 100%; background: #0f1115; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 13px; margin-bottom: 12px; }
+  table.mapping { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.mapping th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  table.mapping td { padding: 4px 6px; border-bottom: 1px solid #1c2029; vertical-align: middle; }
+  table.mapping select { width: 100%; background: #0f1115; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; font-size: 12px; }
+  .confidence { display: inline-block; min-width: 34px; text-align: center; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .conf-high { background: rgba(110, 231, 183, 0.15); color: var(--accent); }
+  .conf-mid { background: rgba(245, 158, 11, 0.15); color: var(--accent2); }
+  .conf-low { background: rgba(248, 113, 113, 0.15); color: var(--bad); }
+  .target-model-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+  .target-model-row select { flex: 1; background: #0f1115; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
+  pre.output {
+    background: #0f1115; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; white-space: pre-wrap; word-break: break-word;
+    max-height: 420px; overflow-y: auto; margin: 0 0 12px;
+  }
+  button {
+    background: var(--accent); color: #0f1115; border: none; border-radius: 6px; padding: 8px 14px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>eco-faker -- schema mapping designer</h1>
+    <p>Runs entirely in your browser -- paste a real <code>schema.prisma</code>, review the auto-inferred column mapping, override anything wrong, download <code>mapping.json</code>. <a href="https://github.com/Hung1510/Eco-Faker">Source</a> &middot; <a href="./index.html">Data playground</a></p>
+  </header>
+  <div class="scope-note">
+    Prisma schemas only in this first slice -- Drizzle/SQLAlchemy schema parsing isn't wired into this visual tool yet (the CLI's <code>init drizzle</code>/<code>init sqlalchemy</code> remain templates, not auto-mapped, for the same reason). Showing the 6 "core" tables a real seed script actually uses (users/carts/abandoned_checkouts/orders/shipments/return_requests); the downloaded <code>mapping.json</code> includes every canonical table, same as <code>my-eco-gen init --schema</code>'s own output.
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <h2>1. Paste your schema.prisma</h2>
+      <textarea id="schemaInput" spellcheck="false" placeholder="model Order {
+  id        String   @id @default(uuid())
+  userId    String
+  total     Decimal
+  status    String
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id        String   @id @default(uuid())
+  firstName String
+  lastName  String
+  email     String   @unique
+}
+"></textarea>
+      <div id="modelsFound" class="models"></div>
+      <div id="parseError" class="parse-error"></div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Review &amp; fix the mapping</h2>
+      <select id="tableSelect" class="table-select"></select>
+      <div id="targetModelRow" class="target-model-row"></div>
+      <table class="mapping">
+        <thead><tr><th>eco-faker column</th><th>maps to</th><th>confidence</th></tr></thead>
+        <tbody id="mappingBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="layout" style="grid-template-columns: 1fr;">
+    <div class="panel">
+      <h2>3. Full mapping.json (all tables, including your edits)</h2>
+      <pre id="mappingOutput" class="output"></pre>
+      <button id="downloadBtn">Download mapping.json</button>
+    </div>
+  </div>
+
+  <script src="./dist/mapping-designer-bundle.js"></script>
+</body>
+</html>

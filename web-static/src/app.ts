@@ -1,4 +1,4 @@
-import { generate, SCENARIOS } from "../../src/browser.js";
+import { generate, SCENARIOS, DEFAULT_CONFIG } from "../../src/browser.js";
 import type { Dataset } from "../../src/browser.js";
 
 declare const Chart: any;
@@ -15,6 +15,15 @@ const valueEls = Object.fromEntries(sliders.map((id) => [id, document.getElement
   HTMLElement
 >;
 const scenarioSelect = document.getElementById("scenario") as HTMLSelectElement;
+
+const moduleToggleIds = ["recommendationData", "inventorySimulation", "supportTickets", "emailMessages", "anomalies"] as const;
+type ModuleToggleId = (typeof moduleToggleIds)[number];
+const moduleToggles = Object.fromEntries(
+  moduleToggleIds.map((id) => [id, document.getElementById("mod-" + id) as HTMLInputElement])
+) as Record<ModuleToggleId, HTMLInputElement>;
+const catalogSizeEl = document.getElementById("catalogSize") as HTMLInputElement;
+const valCatalogSizeEl = document.getElementById("val-catalogSize")!;
+const configOutputEl = document.getElementById("configOutput")!;
 
 let cartChart: any, shipmentChart: any, revenueChart: any;
 let debounceHandle: ReturnType<typeof setTimeout> | undefined;
@@ -49,6 +58,12 @@ function currentOverrides() {
     delayProbability: Number(els.delayProbability.value),
     returnRate: Number(els.returnRate.value),
     multiPackageRate: Number(els.multiPackageRate.value),
+    catalogSize: Number(catalogSizeEl.value),
+    recommendationData: { enabled: moduleToggles.recommendationData.checked },
+    inventorySimulation: { enabled: moduleToggles.inventorySimulation.checked },
+    supportTickets: { enabled: moduleToggles.supportTickets.checked },
+    emailMessages: { enabled: moduleToggles.emailMessages.checked },
+    anomalies: { ...DEFAULT_CONFIG.anomalies, enabled: moduleToggles.anomalies.checked },
     seed: 42,
   };
 }
@@ -57,6 +72,54 @@ function paintSliderValues() {
   for (const id of sliders) {
     valueEls[id].textContent = Number(els[id].value).toFixed(id === "scaleFactor" ? 0 : 2);
   }
+  valCatalogSizeEl.textContent = catalogSizeEl.value;
+}
+
+/**
+ * Shows both a JSON overrides snippet and the real equivalent CLI
+ * invocation -- deliberately only the fields this page actually exposes
+ * (the 5 real module toggles + the sliders + catalogSize), not a dump of
+ * every `EcoFakerConfig` field, so what's shown always matches what the
+ * controls above actually changed. Flag names (`--no-recommendation-data`
+ * etc.) are the real, current CLI option names, not invented shorthand --
+ * copy-paste this straight into a terminal and it runs.
+ */
+function renderConfigOutput() {
+  const overrides = currentOverrides();
+  const jsonSnippet = JSON.stringify(
+    {
+      scaleFactor: overrides.scaleFactor,
+      abandonmentRate: overrides.abandonmentRate,
+      delayProbability: overrides.delayProbability,
+      returnRate: overrides.returnRate,
+      multiPackageRate: overrides.multiPackageRate,
+      catalogSize: overrides.catalogSize,
+      recommendationData: overrides.recommendationData,
+      inventorySimulation: overrides.inventorySimulation,
+      supportTickets: overrides.supportTickets,
+      emailMessages: overrides.emailMessages,
+      anomalies: { enabled: overrides.anomalies.enabled },
+    },
+    null,
+    2
+  );
+
+  const cliFlags = [
+    scenarioSelect.value ? `--scenario ${scenarioSelect.value}` : null,
+    `--users ${overrides.scaleFactor}`,
+    `--abandonment-rate ${overrides.abandonmentRate}`,
+    `--delay-probability ${overrides.delayProbability}`,
+    `--return-rate ${overrides.returnRate}`,
+    `--multi-package-rate ${overrides.multiPackageRate}`,
+    `--catalog-size ${overrides.catalogSize}`,
+    !moduleToggles.recommendationData.checked ? "--no-recommendation-data" : null,
+    !moduleToggles.inventorySimulation.checked ? "--no-inventory-simulation" : null,
+    !moduleToggles.supportTickets.checked ? "--no-support-tickets" : null,
+    !moduleToggles.emailMessages.checked ? "--no-email-messages" : null,
+    !moduleToggles.anomalies.checked ? "--no-anomalies" : null,
+  ].filter(Boolean);
+
+  configOutputEl.textContent = `# generate --format json --output ./eco-data.json\nmy-eco-gen generate \\\n  ${cliFlags.join(" \\\n  ")}\n\n// or as a --scenario-file JSON config:\n${jsonSnippet}`;
 }
 
 function summarize(dataset: Dataset, elapsedMs: number) {
@@ -196,6 +259,7 @@ function applyScenarioToSliders() {
 
 function refresh() {
   paintSliderValues();
+  renderConfigOutput();
   const start = performance.now();
   const dataset = generate(currentOverrides(), Date.parse("2026-01-01T00:00:00Z"));
   const elapsedMs = performance.now() - start;
@@ -210,6 +274,14 @@ for (const id of sliders) {
     clearTimeout(debounceHandle);
     debounceHandle = setTimeout(refresh, 100);
   });
+}
+catalogSizeEl.addEventListener("input", () => {
+  paintSliderValues();
+  clearTimeout(debounceHandle);
+  debounceHandle = setTimeout(refresh, 100);
+});
+for (const id of moduleToggleIds) {
+  moduleToggles[id].addEventListener("change", refresh);
 }
 scenarioSelect.addEventListener("change", () => {
   applyScenarioToSliders();

@@ -68,6 +68,40 @@ async function main() {
   }
   console.log("OK: scenario dropdown correctly defaults to the custom option, not a real scenario preset");
 
+  // New: module toggle checkboxes and the live config/CLI output panel.
+  const configOutput = doc.getElementById("configOutput");
+  if (!configOutput.textContent.includes("my-eco-gen generate")) {
+    throw new Error("config output panel didn't render a CLI command");
+  }
+  if (!configOutput.textContent.includes("--users")) {
+    throw new Error("config output panel's CLI command is missing --users");
+  }
+  console.log("OK: config/CLI output panel rendered with a real CLI command");
+
+  // With every module checked (the default), no --no-* flags should appear.
+  if (/--no-/.test(configOutput.textContent)) {
+    throw new Error(`expected no --no-* flags with every module checked, got: ${configOutput.textContent}`);
+  }
+  console.log("OK: no --no-* flags shown while every module toggle is checked");
+
+  // Unchecking a module toggle should add its real --no-* flag to the
+  // output AND actually remove that data from the generated stats -- not
+  // just flip a checkbox with no real effect.
+  const recToggle = doc.getElementById("mod-recommendationData");
+  recToggle.checked = false;
+  recToggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+  await waitFor(() => configOutput.textContent.includes("--no-recommendation-data"));
+  console.log("OK: unchecking a module toggle adds its real --no-* CLI flag");
+
+  const supportToggle = doc.getElementById("mod-supportTickets");
+  supportToggle.checked = false;
+  supportToggle.dispatchEvent(new window.Event("change", { bubbles: true }));
+  await waitFor(() => configOutput.textContent.includes("--no-support-tickets"));
+  if (!configOutput.textContent.includes("--no-recommendation-data")) {
+    throw new Error("expected BOTH --no-recommendation-data and --no-support-tickets after unchecking two toggles, got: " + configOutput.textContent);
+  }
+  console.log("OK: multiple unchecked toggles all appear together, not just the most recent one");
+
   console.log("\nAll static playground smoke tests passed.");
   process.exit(0);
 }

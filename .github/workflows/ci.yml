@@ -48,6 +48,7 @@ jobs:
           npm run build:static
           node scripts/smoke-test-static.cjs
           node scripts/smoke-test-explorer.cjs
+          node scripts/smoke-test-mapping-designer.cjs
 
   cli-e2e:
     name: CLI end-to-end (generate, replay, stream, init)

@@ -11,4 +11,7 @@ export { SCENARIOS, resolveScenario, type ScenarioName } from "./scenarios.js";
 export { serialize } from "./output/index.js";
 export type { OutputFormat } from "./output/index.js";
 export { buildWebhookEvents, replayEvents, type WebhookEvent, type ReplayOptions } from "./webhook.js";
+export { parsePrismaSchema, type ParsedSchema } from "./introspect/prisma.js";
+export { buildSchemaMapping, matchColumn, CANONICAL_COLUMNS, type SchemaMapping, type ColumnMapping } from "./introspect/mapper.js";
+export { CORE_TABLES, type CoreTable } from "./orm-scaffold.js";
 export * from "./types.js";

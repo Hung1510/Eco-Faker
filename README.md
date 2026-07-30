@@ -114,7 +114,7 @@ That's the whole loop: clone -> install -> build -> test -> generate -> serve. E
 - **Dataset diffing** (`diff`) -- row-count deltas, schema drift, status-distribution shifts between two datasets
 - **Time-travel debug/regression** (`replay` / `warp`) -- exact or time-shifted reproduction from a snapshot
 - **Multi-store mode** (`--stores N`) -- N independent, distinctly-seeded stores in one call
-- **Interactive playground / relationship explorer / journey timeline** -- visual, browser-based views over a real dataset
+- **Interactive playground / relationship explorer / schema mapping designer / journey timeline** -- visual, browser-based views over a real dataset (or a real schema.prisma, for the mapping designer)
 - **Anomaly injection & fraud simulation** -- rare, high-value edge cases and fraud risk signals
 - **Schema introspection** (`init --schema`) -- maps onto an existing Prisma/Drizzle/SQLAlchemy/OpenAPI schema
 - **High-volume stream mode** (`--stream`) -- NDJSON straight to stdout, flat memory regardless of scale
@@ -735,7 +735,7 @@ npm run build:static
 # open web-static/index.html
 ```
 
-The same generator bundled client-side with esbuild -- no server. `.github/workflows/pages.yml` deploys this to GitHub Pages on every push touching `web-static/` or `src/`.
+The same generator bundled client-side with esbuild -- no server. Sliders + scenario presets drive live Chart.js charts; checkboxes for the 5 real toggleable modules (recommendation data, inventory simulation, support tickets, transactional emails, anomaly injection) plus catalog size show a live-updating panel with both the equivalent `EcoFakerConfig` JSON and a real, copy-pasteable `my-eco-gen generate` command (the actual current flag names -- `--no-recommendation-data` etc. -- not invented shorthand). `.github/workflows/pages.yml` deploys this to GitHub Pages on every push touching `web-static/` or `src/`.
 
 ## Interactive relationship explorer
 
@@ -745,6 +745,17 @@ npm run build:static
 ```
 
 Miller-columns drill-down (User → Orders → Shipment/Returns), entirely client-side, same architecture as the playground above.
+
+## Schema mapping designer
+
+```bash
+npm run build:static
+# open web-static/mapping-designer.html
+```
+
+Paste a real `schema.prisma`, review the real column mapping `buildSchemaMapping` infers (the same function `init --schema` uses), and manually fix anything wrong before downloading `mapping.json` -- a visual front end for a workflow that otherwise means hand-editing JSON in a text editor. Confidence-color-coded per column (green/yellow/red); overriding a column's target, or the whole table's target model, recomputes live and is reflected immediately in the exported file. Entirely client-side, same "no server" architecture as the other two demos above.
+
+Scoped honestly to Prisma schemas only in this first slice -- `init drizzle`/`init sqlalchemy` remain templates on the CLI side too, for the same reason (no schema parser for either yet). Shows the 6 "core" tables a real Prisma seed script actually consumes (`users`/`carts`/`abandoned_checkouts`/`orders`/`shipments`/`return_requests`); the downloaded `mapping.json` always covers every canonical table regardless, matching `init --schema`'s own output exactly.
 
 ## Anomaly injection
 
@@ -1008,7 +1019,7 @@ web/
   server.mjs               Express API for the interactive playground
   public/index.html        sliders + Chart.js frontend
 web-static/
-  index.html / explorer.html   static demos, no server
+  index.html / explorer.html / mapping-designer.html   static demos, no server
   src/app.ts / explorer.ts     import src/browser.ts directly
 examples/
   scenarios/full-lifecycle.yaml   real, runnable example for `test --scenario`
