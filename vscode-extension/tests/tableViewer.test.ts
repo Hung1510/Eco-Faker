@@ -126,3 +126,164 @@ describe("loadDatasetTables", () => {
     assert.deepEqual(Object.keys(tables), ["orders"]);
   });
 });
+
+const relationshipDataset: DatasetTables = {
+  users: [
+    { id: "u1", firstName: "Alice", lastName: "Nguyen", email: "alice@example.com" },
+    { id: "u2", firstName: "Bob", lastName: "Tran", email: "bob@example.com" },
+  ],
+  orders: [
+    { id: "o1", userId: "u1", status: "delivered", total: 42.5, currency: "USD", createdAt: "2026-01-05T00:00:00Z", items: [{ sku: "a" }] },
+    { id: "o2", userId: "u1", status: "processing", total: 9.99, currency: "USD", createdAt: "2026-01-06T00:00:00Z", items: [] },
+    // u2 deliberately has no orders, to exercise the "this user has no orders" empty state.
+  ],
+  shipments: [
+    {
+      id: "s1",
+      orderId: "o1",
+      carrier: "UPS",
+      trackingNumber: "1Z999",
+      status: "delivered",
+      delayed: false,
+      packageIndex: 0,
+      totalPackages: 1,
+      events: [{ status: "delivered", timestamp: "2026-01-08T10:00:00Z", location: "Front door" }],
+    },
+  ],
+  returnRequests: [
+    { id: "r1", orderId: "o1", reason: "wrong size", status: "approved", requestedAt: "2026-01-09T00:00:00Z", refundAmountFormatted: "$42.50", resolvedAt: null },
+  ],
+};
+
+function renderRelationshipsInJsdom(dataset: DatasetTables) {
+  const html = buildTableViewerHtml(dataset);
+  const dom = new JSDOM(html, { runScripts: "dangerously" });
+  // Switch to the Relationships tab -- it starts hidden, same as a real user would click to it.
+  dom.window.document.getElementById("eco-tab-btn-relationships")!.dispatchEvent(new dom.window.Event("click"));
+  return dom;
+}
+
+describe("buildTableViewerHtml -- relationship drill-down (User → Orders → Shipment/Returns)", () => {
+  it("offers an enabled Relationships tab when the dataset has the real shape it needs (non-empty users/orders/shipments)", () => {
+    const dom = renderInJsdom(relationshipDataset);
+    const tab = dom.window.document.getElementById("eco-tab-btn-relationships") as HTMLButtonElement;
+    assert.equal(tab.disabled, false);
+  });
+
+  it("disables the Relationships tab, with a clear reason, when the dataset is missing a needed table", () => {
+    const dom = renderInJsdom({ orders: [{ id: "o1" }] }); // no users, no shipments
+    const tab = dom.window.document.getElementById("eco-tab-btn-relationships") as HTMLButtonElement;
+    assert.equal(tab.disabled, true);
+    assert.ok(tab.title.length > 0, "expected a title/tooltip explaining why it's disabled");
+  });
+
+  it("renders every real user on load, with their real order count, not a placeholder", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    const usersCol = dom.window.document.getElementById("rel-col-users")!;
+    assert.ok(usersCol.textContent!.includes("Alice"));
+    assert.ok(usersCol.textContent!.includes("Bob"));
+    assert.ok(usersCol.textContent!.includes("2 orders")); // Alice has 2 real orders
+    assert.ok(usersCol.textContent!.includes("0 orders")); // Bob has none
+  });
+
+  it("clicking a user drills down into their real orders", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    const aliceRow = dom.window.document.querySelector('[data-user-id="u1"]') as HTMLElement;
+    aliceRow.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    const ordersCol = dom.window.document.getElementById("rel-col-orders")!;
+    assert.ok(ordersCol.textContent!.includes("o1".slice(0, 8)) || ordersCol.querySelectorAll("[data-order-id]").length === 2);
+    assert.equal(ordersCol.querySelectorAll("[data-order-id]").length, 2);
+  });
+
+  it("clicking a user with no orders shows a real empty state, not stale data from a previous selection", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    dom.window.document.querySelector('[data-user-id="u1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    assert.equal(dom.window.document.getElementById("rel-col-orders")!.querySelectorAll("[data-order-id]").length, 2);
+
+    dom.window.document.querySelector('[data-user-id="u2"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    const ordersCol = dom.window.document.getElementById("rel-col-orders")!;
+    assert.equal(ordersCol.querySelectorAll("[data-order-id]").length, 0);
+    assert.ok(ordersCol.textContent!.includes("no orders"));
+  });
+
+  it("clicking an order drills down into its real shipment AND return request simultaneously", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    dom.window.document.querySelector('[data-user-id="u1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    dom.window.document.querySelector('[data-order-id="o1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+
+    const shipmentsCol = dom.window.document.getElementById("rel-col-shipments")!;
+    const returnsCol = dom.window.document.getElementById("rel-col-returns")!;
+    assert.equal(shipmentsCol.querySelectorAll("[data-shipment-id]").length, 1);
+    assert.ok(shipmentsCol.textContent!.includes("UPS"));
+    assert.equal(returnsCol.querySelectorAll("[data-return-id]").length, 1);
+    assert.ok(returnsCol.textContent!.includes("wrong size"));
+  });
+
+  it("an order with no shipment/return shows real empty states for both columns", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    dom.window.document.querySelector('[data-user-id="u1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    dom.window.document.querySelector('[data-order-id="o2"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true })); // o2 has no shipment/return
+
+    const shipmentsCol = dom.window.document.getElementById("rel-col-shipments")!;
+    const returnsCol = dom.window.document.getElementById("rel-col-returns")!;
+    assert.ok(shipmentsCol.textContent!.includes("No shipments"));
+    assert.ok(returnsCol.textContent!.includes("No return request"));
+  });
+
+  it("clicking a shipment renders its real tracking timeline in the detail panel", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    dom.window.document.querySelector('[data-user-id="u1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    dom.window.document.querySelector('[data-order-id="o1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    dom.window.document.querySelector('[data-shipment-id="s1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+
+    const detail = dom.window.document.getElementById("rel-detail")!;
+    assert.ok(detail.textContent!.includes("UPS"));
+    assert.ok(detail.textContent!.includes("1Z999"));
+    assert.ok(detail.textContent!.includes("Front door")); // real tracking event location
+  });
+
+  it("clicking a return request renders its real refund/reason detail", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    dom.window.document.querySelector('[data-user-id="u1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    dom.window.document.querySelector('[data-order-id="o1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    dom.window.document.querySelector('[data-return-id="r1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+
+    const detail = dom.window.document.getElementById("rel-detail")!;
+    assert.ok(detail.textContent!.includes("wrong size"));
+    assert.ok(detail.textContent!.includes("$42.50"));
+    assert.ok(detail.textContent!.includes("not yet")); // resolvedAt is null in the fixture
+  });
+
+  it("the breadcrumb reflects the real current drill-down path", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    assert.ok(dom.window.document.getElementById("rel-breadcrumb")!.textContent!.includes("Pick a user"));
+
+    dom.window.document.querySelector('[data-user-id="u1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    assert.ok(dom.window.document.getElementById("rel-breadcrumb")!.textContent!.includes("Alice Nguyen"));
+
+    dom.window.document.querySelector('[data-order-id="o1"]')!.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+    assert.ok(dom.window.document.getElementById("rel-breadcrumb")!.textContent!.includes("Order #"));
+  });
+
+  it("the user search filter actually filters by name and email, not just visually hiding rows", () => {
+    const dom = renderRelationshipsInJsdom(relationshipDataset);
+    const search = dom.window.document.getElementById("rel-search") as HTMLInputElement;
+    search.value = "bob";
+    search.dispatchEvent(new dom.window.Event("input"));
+    const usersCol = dom.window.document.getElementById("rel-col-users")!;
+    assert.equal(usersCol.querySelectorAll("[data-user-id]").length, 1);
+    assert.ok(usersCol.textContent!.includes("Bob"));
+    assert.equal(usersCol.textContent!.includes("Alice"), false);
+  });
+
+  it("escapes HTML in relationship fields the same way the flat table view does", () => {
+    const dangerous: DatasetTables = {
+      users: [{ id: "u1", firstName: "<script>alert(1)</script>", lastName: "X", email: "x@example.com" }],
+      orders: [{ id: "o1", userId: "u1", status: "delivered", total: 1, currency: "USD", createdAt: "2026-01-01T00:00:00Z", items: [] }],
+      shipments: [{ id: "s1", orderId: "o1", carrier: "UPS", trackingNumber: "1", status: "delivered", delayed: false, packageIndex: 0, totalPackages: 1, events: [] }],
+    };
+    const dom = renderRelationshipsInJsdom(dangerous);
+    assert.equal(dom.window.document.querySelectorAll("#rel-col-users script").length, 0);
+    assert.ok(dom.window.document.getElementById("rel-col-users")!.innerHTML.includes("&lt;script&gt;"));
+  });
+});

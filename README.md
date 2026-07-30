@@ -93,6 +93,8 @@ That's the whole loop: clone -> install -> build -> test -> generate -> serve. E
 - **Benchmark export** (`benchmark-export`) -- real Elasticsearch Bulk NDJSON + mappings, and ClickHouse DDL
 - **Great Expectations export** (`ge-export`) -- one real expectation suite per table, every assertion derived from actual observed values, never a hardcoded assumption
 - **DB snapshot + anonymization** (`db-snapshot`) -- connects to a real live Postgres database and writes deterministically-pseudonymized real rows to JSON, safe to hand to staging/dev/CI
+- **File-based anonymization** (`anonymize`) -- the same deterministic pseudonymization, applied to a local .json/.csv file instead of a live DB connection
+- **k6 load-test export** (`k6-export`) -- a real, runnable k6 script targeting the mock API or a real API via its OpenAPI contract, with live id-discovery for get-by-id checks
 - **AI dataset export** (`ai-export`) -- Text2SQL pairs, RAG corpus, agent-testing scenarios, LLM eval set
 - **Event sourcing mode** (`events`) -- chronologically-ordered event stream across all 18 tables
 - **Scenario composer** (`--scenario-file`) -- author your own reusable scenario, inheriting from built-ins or other files
@@ -294,6 +296,18 @@ cp ./ge-export/orders.json great_expectations/expectations/orders.json
 ```
 
 Writes one real [Great Expectations](https://greatexpectations.io/) expectation suite per table, every expectation derived from this exact dataset's actual generated values -- column existence and order from the real columns present, not-null only where every real row genuinely has one, uniqueness only for non-float columns where it's actually true (a money/measurement value being unique in a small sample is chance, not a business rule -- `total`/`subtotal`/etc. never get it even when they happen to qualify), inferred type, numeric range from the real observed min/max, and an enum-style `value_set` for string columns with few enough distinct values relative to row count. This is a starting baseline meant to be reviewed and loosened -- the same role GE's own built-in profilers already play -- not a finished production suite; `expect_table_row_count_to_be_between` in particular pins the exact row count of this one export and will need widening for anything but revalidating this same data.
+
+## k6 load-test export (`k6-export`)
+
+```bash
+my-eco-gen serve --users 500 --port 4000 &
+my-eco-gen k6-export --output ./load-test.js --target-url http://localhost:4000
+k6 run ./load-test.js
+```
+
+Writes a real, runnable [k6](https://k6.io/) load-test script. Two modes: default targets eco-faker's own mock API using its real, current route list (the exact same `TABLE_ROUTES` `serve`/the Postman export use -- never a second, hand-typed copy); `--contract <openapi.json>` instead derives routes from a real OpenAPI contract, for load-testing an arbitrary real API matching that contract (the same contract `test --contract` validates against). Every route gets a list-endpoint check, plus a get-by-id check using a real id discovered *live* from the list response at k6 run time -- never assumed or read from a spec's example values.
+
+Scope, stated plainly for contract mode: only paths with zero path parameters are treated as list entry points, and a detail sibling is only picked up if that same path plus a single trailing `/{param}` also declares a GET. A path with more than one path parameter, or a parameterized path with no plain list-style parent, isn't attempted -- a general OpenAPI-to-k6 path-parameter resolver is a bigger, different feature than this. `--api-key <key>` sends `Authorization: Bearer <key>` on every request, matching `serve --api-key`.
 
 ## Data quality / realism score (`score`)
 
@@ -863,6 +877,20 @@ Stated plainly, because it's a real, demonstrated limitation, not a hypothetical
 
 Also stated plainly: `--row-limit` (default 1000 per table) reads whichever rows Postgres happens to return first with no `ORDER BY` -- not a representative sample, and not guaranteed to keep cross-table foreign keys intact if a referenced row falls outside another table's own limit. Fine for a small database; raise the limit (or drop it per-table) for a large one.
 
+A real, confirmed check guards against the worst version of the name-heuristic problem: an auto-detected column is only anonymized if its real values actually fit -- no column is ever treated as PII if its real values are booleans (confirmed directly: `recoveryEmailSent`, a boolean, matched the `email` name pattern and would otherwise have been corrupted into a fake email string), and an "email" classification specifically requires the real values contain "@". `--exclude-anonymize`/`--anonymize` still exist for anything this doesn't catch.
+
+## File-based anonymization (`anonymize`)
+
+```bash
+my-eco-gen anonymize --input customers.csv --output ./anonymized/
+my-eco-gen anonymize --input dataset.json --output ./anonymized/ --exclude-anonymize "products.name"
+my-eco-gen anonymize --input export.csv --table users --format csv --output ./anonymized/
+```
+
+The exact same deterministic pseudonymization `db-snapshot` uses (they share one implementation, `src/anonymize.ts`), applied to a local `.json` or `.csv` file instead of a live Postgres connection -- for anyone with an export already but no live DB access. Accepts a flat array or `.csv` (treated as one table, named from `--table` or the input filename) or a JSON object of `table-name -> rows` (a real `dataset.json`, or a `db-snapshot` output directory's combined shape -- non-array keys like a `config` block are correctly skipped, not fabricated into empty tables). `--format json|csv` controls the output (default json), one file per table either way.
+
+CSV parsing is a real, dependency-free RFC 4180 parser (quoted fields, `""` escaped quotes, commas/newlines inside quotes) -- this project has no CSV-parsing dependency and the real quoting rules are small enough to implement and test directly. Its one confirmed scope limit: a bare quote appearing mid-*unquoted*-field (not valid RFC 4180 to begin with) is silently lossy, not an error -- real CSV writers never produce that shape.
+
 ## Dev container (`.devcontainer/`)
 
 Open in VS Code (or any [Dev Containers](https://containers.dev)-compatible tool), "Reopen in Container" -- Node 22, git, `psql`, and a real, pre-seeded Postgres. First creation runs `npm install`, `npm run build`, and a one-time seed guarded by a row-count check (so rebuilding the `app` container doesn't re-insert into already-seeded data). Self-contained, not merged with the root `docker-compose.yml` (which has its own one-shot, non-idempotent `seed` service meant for a separate workflow).
@@ -993,6 +1021,9 @@ src/
   mutation-test.ts           write-path/mutation contract testing engine (`test --mutate`)
   scenario-test.ts            cross-resource, multi-step scenario testing engine (`test --scenario`)
   gherkin.ts                  parses real .feature files into the same scenario engine (`test --gherkin`)
+  db-snapshot.ts               live-Postgres snapshot + anonymization (`db-snapshot`)
+  anonymize.ts                 shared anonymization primitives + CSV parser + file loader (`anonymize`, and db-snapshot.ts's Postgres path)
+  k6-export.ts                 real k6 load-test script generation (`k6-export`)
   scaffold.ts                 templates for `init next` / `init msw`
   orm-scaffold.ts              real ORM seed scripts for `init prisma`/`init drizzle`/`init sqlalchemy`
   score.ts                   realism-score engine (`score`)
@@ -1052,7 +1083,7 @@ npm run perf-regression   # fails if generation time/memory regress beyond a sto
 
 A UI in front of the CLI, for generating data, browsing it, or scaffolding a project without leaving the editor -- see [`vscode-extension/`](./vscode-extension/) for the source and its own README.
 
-Commands (Command Palette, `Cmd/Ctrl+Shift+P`): **eco-faker: Generate Dataset** (prompts for users/scenario/format/output path, then offers to jump into the table viewer), **eco-faker: View Dataset Tables** (browse any generated `dataset.json` in a webview -- switch tables, search, sort, paginate, entirely client-side), **eco-faker: Scaffold Next.js Integration**, **eco-faker: Scaffold MSW Integration**. The CLI-invoking commands shell out to the real `my-eco-gen` CLI (or `npx eco-faker` if it's not installed globally) -- not a reimplementation of any generation logic.
+Commands (Command Palette, `Cmd/Ctrl+Shift+P`): **eco-faker: Generate Dataset** (prompts for users/scenario/format/output path, then offers to jump into the table viewer), **eco-faker: View Dataset Tables** (browse any generated `dataset.json` in a webview -- switch tables, search, sort, paginate, entirely client-side, plus a second **Relationships** tab: the same Miller-columns User → Orders → Shipment/Returns drill-down the static `web-static/explorer.html` demo already established, ported into the same webview -- click a user to see their orders, click an order to see its shipment and return request side by side, click either for full tracking/refund detail), **eco-faker: Scaffold Next.js Integration**, **eco-faker: Scaffold MSW Integration**. The CLI-invoking commands shell out to the real `my-eco-gen` CLI (or `npx eco-faker` if it's not installed globally) -- not a reimplementation of any generation logic.
 
 ```bash
 cd vscode-extension
@@ -1061,7 +1092,7 @@ npm test          # real CLI spawned end-to-end + the table viewer's real HTML/J
 npm run package   # produces an installable .vsix via @vscode/vsce
 ```
 
-First slice, scoped deliberately: generate/view/scaffold commands only, no Miller-columns relationship drill-down yet (a natural next step, not attempted here -- the CLI's own `visualize`/static demo already cover a version of that outside the editor). The extension's own logic that builds CLI invocations and the table viewer's entire client-side behavior are both directly tested (including, for the table viewer, actually executing its real embedded script via jsdom -- table switching, search, sort, and pagination are all genuinely exercised) -- but `extension.ts`'s actual VS Code UI (QuickPicks, progress notifications, webview creation) hasn't been run inside a real Extension Host, since that needs downloading the actual VS Code binary from a host this environment can't reach. Stated plainly rather than implied otherwise.
+The Relationships tab is only offered when the dataset actually has the shape it needs (non-empty `users`/`orders`/`shipments` -- `returnRequests` optional); a dataset missing any of those gets a disabled tab explaining why, rather than an empty-looking one. The extension's own logic that builds CLI invocations and the table viewer's entire client-side behavior (both view modes) are directly tested (including actually executing the real embedded script via jsdom -- table switching, search, sort, pagination, and the full user → order → shipment/return drill-down with its breadcrumb and detail panel are all genuinely exercised) -- but `extension.ts`'s actual VS Code UI (QuickPicks, progress notifications, webview creation) hasn't been run inside a real Extension Host, since that needs downloading the actual VS Code binary from a host this environment can't reach. Stated plainly rather than implied otherwise.
 
 ## CLI docs & shell completion
 

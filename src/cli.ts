@@ -51,6 +51,9 @@ import { analyticsToCsvFiles, analyticsToSql } from "./output/dashboard.js";
 import { generateElasticsearchMappings, generateElasticsearchBulkNdjson } from "./output/benchmark/elasticsearch.js";
 import { generateGreatExpectationsSuites } from "./output/great-expectations.js";
 import { snapshotDatabase } from "./db-snapshot.js";
+import { anonymizeRows, loadTablesFromFile, type LoadedTables } from "./anonymize.js";
+import { buildK6Script } from "./k6-export.js";
+import { tableToCsv } from "./output/csv.js";
 import { generateClickHouseDdl } from "./output/benchmark/clickhouse.js";
 import { generateAiDataset } from "./output/ai-dataset.js";
 import { buildEventStream } from "./events.js";
@@ -1617,6 +1620,104 @@ program
     }
     console.log(`\nWritten ${results.length} tables to ${outputDir}/`);
     console.log(`Review --exclude-anonymize/--anonymize before trusting the auto-detection on your own schema -- it's a name heuristic, not a guarantee.`);
+  });
+
+program
+  .command("anonymize")
+  .description(
+    "The same PII-shaped-column anonymization db-snapshot uses, applied to a local .json or .csv file instead of a live Postgres connection -- for anyone with an export already (a CSV dump, a dataset.json) but no live DB access. Deterministic (same real value always maps to the same fake replacement) and irreversible (never stored). Accepts a flat array/CSV (one table) or a JSON object of table-name -> rows (a real dataset.json, or a db-snapshot output directory's combined shape)."
+  )
+  .requiredOption("--input <path>", "a local .json or .csv file to anonymize")
+  .option("--table <name>", "table name to use for a single-table input (flat JSON array or .csv) -- default: the input filename without its extension")
+  .option("--anonymize <list>", "comma-separated table.column pairs to force-anonymize even though the name heuristic didn't flag them")
+  .option("--exclude-anonymize <list>", "comma-separated table.column pairs to leave alone even though the name heuristic flagged them -- e.g. a 'name' column that's actually a product name, not a person's")
+  .option("--format <json|csv>", "output format, one file per table (default: json)", "json")
+  .option("-o, --output <path>", "output directory (default: ./anonymized/)")
+  .action((opts) => {
+    const outputDir = path.resolve(process.cwd(), (opts.output as string) ?? "./anonymized");
+    const format = opts.format as string;
+    if (format !== "json" && format !== "csv") {
+      console.error(`Unknown --format "${format}" -- expected json or csv.`);
+      process.exit(1);
+      return;
+    }
+
+    const parseList = (value: string | undefined): Set<string> | undefined => (value ? new Set(value.split(",").map((s) => s.trim())) : undefined);
+
+    let tables: LoadedTables;
+    try {
+      tables = loadTablesFromFile(path.resolve(process.cwd(), opts.input as string), opts.table as string | undefined);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+      return;
+    }
+
+    if (Object.keys(tables).length === 0) {
+      console.error(`${opts.input}: no table data found -- expected a flat array of rows, a .csv file, or an object of table-name -> rows.`);
+      process.exit(1);
+      return;
+    }
+
+    mkdirSync(outputDir, { recursive: true });
+    const includeColumns = parseList(opts.anonymize as string | undefined);
+    const excludeColumns = parseList(opts.excludeAnonymize as string | undefined);
+
+    for (const [table, rows] of Object.entries(tables)) {
+      const { rows: anonymizedRows, anonymizedColumns } = anonymizeRows(table, rows, { includeColumns, excludeColumns });
+      const outPath = path.join(outputDir, `${table}.${format}`);
+      if (format === "csv") {
+        const columns = anonymizedRows.length > 0 ? Object.keys(anonymizedRows[0]) : [];
+        writeFileSync(outPath, tableToCsv(columns, columns, anonymizedRows), "utf-8");
+      } else {
+        writeFileSync(outPath, JSON.stringify(anonymizedRows, null, 2) + "\n", "utf-8");
+      }
+      const anonNote = anonymizedColumns.length > 0 ? `anonymized: ${anonymizedColumns.join(", ")}` : "no PII-shaped columns detected";
+      console.log(`${table}: ${anonymizedRows.length} rows written (${anonNote})`);
+    }
+    console.log(`\nWritten ${Object.keys(tables).length} table(s) to ${outputDir}/`);
+    console.log(`Review --exclude-anonymize/--anonymize before trusting the auto-detection on your own schema -- it's a name heuristic, not a guarantee.`);
+  });
+
+program
+  .command("k6-export")
+  .description(
+    "Generate a real, runnable k6 (https://k6.io/) load-test script. Default mode targets eco-faker's own mock API using its real route list (the same one serve/the Postman export use); --contract <openapi.json> instead derives routes from a real OpenAPI contract, for load-testing an arbitrary real API matching that contract. Every route gets a list-endpoint check, plus a get-by-id check using a real id discovered live from the list response, where such a sibling route exists."
+  )
+  .requiredOption("-o, --output <path>", "output file path, e.g. ./load-test.js")
+  .option("--target-url <url>", "base URL the generated script targets by default (overridable at k6 run time via -e BASE_URL=...)", "http://localhost:4000")
+  .option("--contract <path>", "path to a real OpenAPI 3.0 document (.json or .yaml) -- derive routes from its declared GET operations instead of eco-faker's own TABLE_ROUTES")
+  .option("--vus <number>", "virtual users (default: 10)", parseIntArg, 10)
+  .option("--duration <seconds>", "test duration in seconds (default: 30)", parseIntArg, 30)
+  .option("--api-key <key>", "send `Authorization: Bearer <key>` on every request -- matches serve --api-key")
+  .action((opts) => {
+    let contract: OpenApiDocument | undefined;
+    if (opts.contract) {
+      const contractPath = path.resolve(process.cwd(), opts.contract as string);
+      try {
+        const raw = readFileSync(contractPath, "utf-8");
+        contract = (contractPath.toLowerCase().endsWith(".json") ? JSON.parse(raw) : loadYaml(raw)) as OpenApiDocument;
+      } catch (err) {
+        console.error(`Couldn't read/parse ${contractPath}: ${(err as Error).message}`);
+        process.exit(1);
+        return;
+      }
+    }
+
+    const script = buildK6Script({
+      baseUrl: opts.targetUrl as string,
+      vus: opts.vus as number,
+      durationSeconds: opts.duration as number,
+      apiKey: opts.apiKey as string | undefined,
+      contract,
+    });
+
+    const outputPath = path.resolve(process.cwd(), opts.output as string);
+    mkdirSync(path.dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, script, "utf-8");
+    console.log(`Written ${outputPath}`);
+    console.log(`Run it with a real k6 install: k6 run ${path.relative(process.cwd(), outputPath)}`);
+    console.log(`Override the target at run time: k6 run -e BASE_URL=http://your-host:port ${path.relative(process.cwd(), outputPath)}`);
   });
 
 program

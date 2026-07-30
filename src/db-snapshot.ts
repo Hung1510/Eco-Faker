@@ -1,5 +1,10 @@
-import { createHash } from "node:crypto";
-import { Faker, en } from "@faker-js/faker";
+import { anonymizeRows, classifyColumn, anonymizeValue, type PiiKind, type AnonymizeRowsOptions } from "./anonymize.js";
+
+// Re-exported for backward compatibility -- these used to be defined
+// directly in this file; they're now shared with the file-based
+// `anonymize` command via anonymize.ts, so this file only re-exports
+// them rather than duplicating the implementation.
+export { classifyColumn, anonymizeValue, type PiiKind };
 
 /** Minimal shape of `pg`'s Client this module needs -- same pattern as `lint.ts`'s `PgClientLike`, avoiding a hard @types/pg dependency for an optional codepath. */
 interface PgClientLike {
@@ -42,110 +47,12 @@ export async function listColumns(client: PgClientLike, table: string, schema = 
   return result.rows.map((r) => r.column_name as string);
 }
 
-/**
- * What kind of PII a column *looks like it holds*, purely from its name.
- * This is a heuristic, stated plainly as one -- a column literally named
- * `name` holding a product name, not a person's, would be a real false
- * positive. `--exclude-anonymize table.column` exists specifically to
- * override an auto-detection that's wrong for a given schema;
- * `--anonymize table.column` exists to catch a real PII column this
- * heuristic misses (e.g. a company-specific field like `slack_handle`).
- */
-export type PiiKind =
-  | "email"
-  | "ssn"
-  | "credit_card"
-  | "phone"
-  | "ip_address"
-  | "date_of_birth"
-  | "first_name"
-  | "last_name"
-  | "full_name"
-  | "address"
-  | "generic_secret";
-
-// Ordered most-specific to least-specific -- `first_name`/`last_name` must
-// be checked before the generic `full_name` pattern (which would otherwise
-// match "name" inside "first_name" first and misclassify it).
-const PII_PATTERNS: { kind: PiiKind; pattern: RegExp }[] = [
-  { kind: "email", pattern: /e[-_]?mail/i },
-  { kind: "ssn", pattern: /\bssn\b|social_?security/i },
-  { kind: "credit_card", pattern: /credit_?card|card_?number|\bcvv\b/i },
-  { kind: "phone", pattern: /phone|mobile|\bcell\b/i },
-  { kind: "ip_address", pattern: /ip_?address|^ip$/i },
-  { kind: "date_of_birth", pattern: /date_?of_?birth|\bdob\b|birth_?date/i },
-  { kind: "first_name", pattern: /first_?name|given_?name/i },
-  { kind: "last_name", pattern: /last_?name|surname|family_?name/i },
-  { kind: "address", pattern: /address|street/i },
-  { kind: "full_name", pattern: /^name$|full_?name|customer_?name|contact_?name/i },
-  { kind: "generic_secret", pattern: /password|passwd|secret|\btoken\b|api_?key/i },
-];
-
-export function classifyColumn(columnName: string): PiiKind | null {
-  for (const { kind, pattern } of PII_PATTERNS) {
-    if (pattern.test(columnName)) return kind;
-  }
-  return null;
-}
-
-/**
- * Deterministically derive a 32-bit seed from a real value's SHA-256 hash.
- * The same input value ALWAYS produces the same seed, and therefore the
- * same fake replacement -- this is what keeps repeated real values (the
- * same customer's email appearing in multiple tables, or multiple times
- * in the same table) consistent with each other in the anonymized output,
- * without ever storing a reversible mapping from fake back to real.
- */
-function seedFromValue(value: string): number {
-  return createHash("sha256").update(value).digest().readUInt32BE(0);
-}
-
-/** A deterministic, irreversible replacement for one real value, shaped like the kind of PII the column appears to hold. */
-export function anonymizeValue(kind: PiiKind, rawValue: unknown): unknown {
-  if (rawValue === null || rawValue === undefined) return rawValue;
-  const str = String(rawValue);
-  const faker = new Faker({ locale: [en] });
-  faker.seed(seedFromValue(str));
-
-  switch (kind) {
-    case "email":
-      return faker.internet.email().toLowerCase();
-    case "phone":
-      return faker.phone.number();
-    case "ssn":
-      return `${faker.number.int({ min: 100, max: 999 })}-${faker.number.int({ min: 10, max: 99 })}-${faker.number.int({ min: 1000, max: 9999 })}`;
-    case "credit_card":
-      return faker.finance.creditCardNumber();
-    case "ip_address":
-      return faker.internet.ip();
-    case "date_of_birth":
-      return faker.date.birthdate().toISOString().slice(0, 10);
-    case "first_name":
-      return faker.person.firstName();
-    case "last_name":
-      return faker.person.lastName();
-    case "full_name":
-      return faker.person.fullName();
-    case "address":
-      return faker.location.streetAddress();
-    case "generic_secret":
-      // Not faked as a plausible-looking secret -- a real password/token
-      // hash should never be replaced with something that LOOKS like a
-      // valid credential. Redacted to an opaque, clearly-fake marker instead.
-      return str.length === 0 ? "[REDACTED:empty]" : `[REDACTED:${createHash("sha256").update(str).digest("hex").slice(0, 12)}]`;
-  }
-}
-
-export interface DbSnapshotOptions {
+export interface DbSnapshotOptions extends AnonymizeRowsOptions {
   /** Which tables to snapshot (default: every base table in `schema`). */
   tables?: string[];
   schema?: string;
   /** Max rows read per table (default: 1000) -- a safety cap, not a sampling strategy; this reads the first `rowLimit` rows in whatever order Postgres returns them. */
   rowLimit?: number;
-  /** "table.column" pairs to anonymize even though the name heuristic didn't flag them. */
-  includeColumns?: Set<string>;
-  /** "table.column" pairs to leave alone even though the name heuristic flagged them -- the escape hatch for a real false positive. */
-  excludeColumns?: Set<string>;
 }
 
 export interface DbSnapshotTableResult {
@@ -160,11 +67,13 @@ export interface DbSnapshotTableResult {
  * Connects to a REAL live Postgres database, read-only (`SELECT` only --
  * no writes, no `BEGIN`/transaction needed since nothing here can mutate
  * anything), and returns real rows from real tables with PII-shaped
- * columns deterministically pseudonymized. Intended for turning a
- * snapshot of real production-shaped data into something safe to hand to
- * staging/dev/CI without exposing real customers' emails, names, SSNs,
- * etc. -- while keeping repeated real values consistent with each other
- * in the output (see `anonymizeValue`).
+ * columns deterministically pseudonymized via `anonymizeRows` (shared
+ * with the file-based `anonymize` command in `anonymize.ts` -- the actual
+ * anonymization decision-making lives there, once, not duplicated here).
+ * Intended for turning a snapshot of real production-shaped data into
+ * something safe to hand to staging/dev/CI without exposing real
+ * customers' emails, names, SSNs, etc. -- while keeping repeated real
+ * values consistent with each other in the output.
  *
  * Scope, stated plainly: this reads whatever `rowLimit` rows Postgres
  * happens to return first for a table with no explicit ORDER BY -- not a
@@ -184,7 +93,6 @@ export async function snapshotDatabase(databaseUrl: string, options: DbSnapshotO
     const results: DbSnapshotTableResult[] = [];
 
     for (const table of tables) {
-      const columns = await listColumns(client, table, schema);
       // Table/schema names here come from information_schema itself (or
       // an explicit --tables flag the tool's own user controls) -- not
       // parameterizable as SQL identifiers via $n placeholders (Postgres
@@ -193,24 +101,9 @@ export async function snapshotDatabase(databaseUrl: string, options: DbSnapshotO
       const quotedTable = `"${schema.replace(/"/g, '""')}"."${table.replace(/"/g, '""')}"`;
       const queryResult = await client.query(`SELECT * FROM ${quotedTable} LIMIT ${rowLimit}`);
 
-      const anonymizedColumns: string[] = [];
-      const rows = queryResult.rows.map((row) => {
-        const out: Record<string, unknown> = {};
-        for (const column of columns) {
-          const key = `${table}.${column}`;
-          const autoDetected = classifyColumn(column);
-          const excluded = options.excludeColumns?.has(key) ?? false;
-          const forced = options.includeColumns?.has(key) ?? false;
-          const shouldAnonymize = !excluded && (forced || autoDetected !== null);
-
-          if (shouldAnonymize) {
-            if (!anonymizedColumns.includes(column)) anonymizedColumns.push(column);
-            out[column] = anonymizeValue(autoDetected ?? "generic_secret", row[column]);
-          } else {
-            out[column] = row[column];
-          }
-        }
-        return out;
+      const { rows, anonymizedColumns } = anonymizeRows(table, queryResult.rows, {
+        includeColumns: options.includeColumns,
+        excludeColumns: options.excludeColumns,
       });
 
       results.push({ table, rowCount: rows.length, anonymizedColumns, rows });
