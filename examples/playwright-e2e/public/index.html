@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Fake Shopify Backend — Order Management</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; max-width: 640px; margin: 0 auto; }
+    li { padding: 8px 0; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; }
+    button { cursor: pointer; }
+    .status-cancelled { color: #b91c1c; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Orders</h1>
+  <ul id="order-list" data-testid="order-list"></ul>
+
+  <script>
+    async function loadOrders() {
+      const res = await fetch("/api/orders?status=processing&limit=10");
+      const { data } = await res.json();
+      const list = document.getElementById("order-list");
+      list.innerHTML = "";
+      for (const order of data) {
+        const li = document.createElement("li");
+        li.dataset.testid = "order-row";
+        li.dataset.orderId = order.id;
+
+        const label = document.createElement("span");
+        label.textContent = `${order.id.slice(0, 8)} — ${order.totalFormatted} — `;
+        const statusSpan = document.createElement("span");
+        statusSpan.dataset.testid = "order-status";
+        statusSpan.textContent = order.status;
+        statusSpan.className = order.status === "cancelled" ? "status-cancelled" : "";
+        label.appendChild(statusSpan);
+
+        const button = document.createElement("button");
+        button.textContent = "Cancel order";
+        button.dataset.testid = "cancel-button";
+        button.addEventListener("click", async () => {
+          await fetch(`/api/orders/${order.id}/cancel`, { method: "POST" });
+          statusSpan.textContent = "cancelled";
+          statusSpan.className = "status-cancelled";
+          button.disabled = true;
+        });
+
+        li.appendChild(label);
+        li.appendChild(button);
+        list.appendChild(li);
+      }
+    }
+
+    loadOrders();
+  </script>
+</body>
+</html>

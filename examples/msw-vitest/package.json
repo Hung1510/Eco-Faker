@@ -1,0 +1,39 @@
+{
+  "name": "example-msw-vitest",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Tutorial companion project: a React app whose real fetch() calls are intercepted by MSW handlers generated from an eco-faker dataset, shared between Vitest component tests and an offline dev-mode browser worker. See TUTORIAL.md.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "ci-smoke-test": "npm run test"
+  },
+  "dependencies": {
+    "eco-faker": "file:../..",
+    "msw": "^2.15.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "jsdom": "^28.0.0",
+    "pg": "^8.22.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
+  }
+}

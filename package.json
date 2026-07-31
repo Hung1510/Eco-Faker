@@ -44,6 +44,13 @@
   "workspaces": [
     "examples/*"
   ],
+  "overrides": {
+    "example-graphql-apollo": {
+      "@vitejs/plugin-react": {
+        "vite": "^8.2.0"
+      }
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",

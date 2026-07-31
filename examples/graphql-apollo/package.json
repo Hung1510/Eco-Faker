@@ -1,0 +1,29 @@
+{
+  "name": "example-graphql-apollo",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Tutorial companion project: Apollo Client reading from an in-memory eco-faker GraphQL schema via SchemaLink, with a one-line toggle to a real GraphQL endpoint. See TUTORIAL.md.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "ci-smoke-test": "node scripts/ci-smoke-test.mjs"
+  },
+  "dependencies": {
+    "@apollo/client": "^4.2.8",
+    "eco-faker": "file:../..",
+    "graphql": "^17.0.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0"
+  }
+}

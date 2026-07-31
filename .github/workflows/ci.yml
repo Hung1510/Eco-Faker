@@ -338,6 +338,26 @@ jobs:
           npm run build
           npm run ci-smoke-test
 
+      - name: graphql-apollo -- build + resolver smoke-test
+        working-directory: examples/graphql-apollo
+        run: |
+          npm run build
+          npm run ci-smoke-test
+
+      - name: msw-vitest -- test suite
+        working-directory: examples/msw-vitest
+        run: npm run ci-smoke-test
+
+      - name: playwright-e2e -- browser install + parallel test run
+        working-directory: examples/playwright-e2e
+        run: |
+          npx playwright install --with-deps chromium
+          npm run ci-smoke-test
+
+      - name: react-query -- test suite
+        working-directory: examples/react-query
+        run: npm run ci-smoke-test
+
   adapters-e2e:
     name: Adapters end-to-end (MCP, tRPC, GraphQL, live OpenAPI inference)
     runs-on: ubuntu-latest
