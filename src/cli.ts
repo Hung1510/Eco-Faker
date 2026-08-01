@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,7 @@ import { buildPrismaSeedScript, buildDrizzleSeedScript, buildSqlAlchemySeedScrip
 import { computeRealismScore } from "./score.js";
 import { SUPPORTED_LOCALES } from "./locales.js";
 import { generateCompletion, SUPPORTED_SHELLS, type Shell, type CompletionCommandInfo } from "./completion.js";
-import { parseReadmeHeadings, resolveDocsTopic, buildDocsUrl } from "./docs.js";
+import { parseDocsSiteHeadings, resolveDocsTopic, buildDocsUrl } from "./docs.js";
 import { generateWithTargetFunnel } from "./funnel-target.js";
 import { generateStores } from "./multi-store.js";
 import { createMockApiServer } from "./serve.js";
@@ -1911,18 +1911,12 @@ program
 program
   .command("docs")
   .description(
-    "Open the relevant section of the README in your browser -- e.g. `my-eco-gen docs score` opens the realism-score section. Prints the resolved URL either way, so it's still useful in a headless/CI environment where nothing actually opens."
+    "Open the relevant page of the documentation site in your browser -- e.g. `my-eco-gen docs score` opens the realism-score section. Prints the resolved URL either way, so it's still useful in a headless/CI environment where nothing actually opens."
   )
-  .argument("[topic]", "a word or phrase to match against real README section headings (case-insensitive substring match). Omit to open the README's top.")
+  .argument("[topic]", "a word or phrase to match against real docs-site section headings (case-insensitive substring match). Omit to open the docs site's index.")
   .action((topic: string | undefined) => {
-    const readmePath = path.join(packageRoot, "README.md");
-    let headings: ReturnType<typeof parseReadmeHeadings> = [];
-    try {
-      headings = parseReadmeHeadings(readFileSync(readmePath, "utf-8"));
-    } catch {
-      // README.md not found alongside this install -- fall back to just
-      // opening the repo's README page rather than failing outright.
-    }
+    const docsSiteDir = path.join(packageRoot, "docs-site");
+    const headings = parseDocsSiteHeadings(docsSiteDir);
 
     let packageJson: { repository?: { url?: string } | string; homepage?: string } = {};
     try {
@@ -1933,8 +1927,8 @@ program
 
     const match = topic ? resolveDocsTopic(topic, headings) : null;
     if (topic && !match) {
-      console.error(`No README section matches "${topic}". Available sections:`);
-      for (const h of headings) console.error(`  ${h.text}`);
+      console.error(`No documentation section matches "${topic}". Available sections:`);
+      for (const h of headings) console.error(`  ${h.text} (${h.filePath})`);
       process.exit(1);
     }
 
@@ -1980,7 +1974,43 @@ program
     process.stdout.write(generateCompletion(shell as Shell, "my-eco-gen", commands));
   });
 
-program.parse();
+main();
+
+async function main() {
+  try {
+    await program.parseAsync(process.argv);
+  } catch (err) {
+    reportFatalError(err);
+  }
+}
+
+// A single top-level boundary for the whole CLI: every one of the 37
+// subcommands' action handlers, plus Commander's own option/argument
+// parsing, funnels through here on failure. Without it, an uncaught error
+// (a bad --input path, invalid JSON, a network error in `serve`/`webhook`,
+// ...) prints a raw Node stack trace and a confusing exit path instead of
+// a one-line, actionable message -- the same shape of error CLI users
+// already get for things like a missing required option.
+//
+// Set ECO_FAKER_DEBUG=1 to see the full stack trace when you need it for
+// actually debugging eco-faker itself, rather than diagnosing a typo'd path.
+function reportFatalError(err: unknown): never {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`error: ${message}`);
+  if (process.env.ECO_FAKER_DEBUG && err instanceof Error && err.stack) {
+    console.error(`\n${err.stack}`);
+  } else {
+    console.error("(set ECO_FAKER_DEBUG=1 to see the full stack trace)");
+  }
+  process.exit(1);
+}
+
+process.on("unhandledRejection", (reason) => {
+  // Safety net for any promise rejection Commander's own parseAsync()
+  // didn't end up awaiting directly (e.g. a fire-and-forget async callback
+  // inside an action handler) -- same clean-message treatment either way.
+  reportFatalError(reason);
+});
 
 function detectSchemaType(schemaPath: string): "prisma" | "drizzle" | "sqlalchemy" | "openapi" | undefined {
   if (schemaPath.endsWith(".prisma")) return "prisma";
@@ -2050,12 +2080,12 @@ async function streamToStdout(overrides: Partial<EcoFakerConfig>, referenceNow: 
 
 function parseIntArg(value: string): number {
   const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed)) throw new Error(`Expected an integer, got "${value}"`);
+  if (Number.isNaN(parsed)) throw new InvalidArgumentError(`Expected an integer, got "${value}"`);
   return parsed;
 }
 
 function parseFloatArg(value: string): number {
   const parsed = Number.parseFloat(value);
-  if (Number.isNaN(parsed)) throw new Error(`Expected a number, got "${value}"`);
+  if (Number.isNaN(parsed)) throw new InvalidArgumentError(`Expected a number, got "${value}"`);
   return parsed;
 }

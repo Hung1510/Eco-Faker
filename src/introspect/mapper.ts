@@ -160,7 +160,7 @@ function matchModel(tableName: string, modelNames: string[]): string | null {
 }
 
 /** Best-effort match between one of our canonical column names and a model's field list. */
-function matchColumn(columnName: string, fieldNames: string[]): ColumnMapping {
+export function matchColumn(columnName: string, fieldNames: string[]): ColumnMapping {
   const columnTokens = tokenize(columnName);
   let best: { name: string; score: number } | null = null;
 

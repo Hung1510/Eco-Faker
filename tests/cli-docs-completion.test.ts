@@ -15,27 +15,27 @@ function runCli(args: string[]): { stdout: string; status: number } {
 }
 
 describe("my-eco-gen docs", () => {
-  it("resolves a real topic to a real README anchor and prints the URL", () => {
+  it("resolves a real topic to a real docs-site page + anchor and prints the URL", () => {
     const result = runCli(["docs", "score"]);
-    expect(result.stdout).toContain("https://github.com/Hung1510/Eco-Faker#data-quality--realism-score-score");
+    expect(result.stdout).toContain("https://github.com/Hung1510/Eco-Faker/blob/main/docs-site/cli/data-quality.md#score");
   });
 
-  it("resolves 'mutate' to the Mutation testing section specifically, not Contract testing", () => {
+  it("resolves 'mutate' to the Mutation Testing page specifically, not Contract Testing", () => {
     const result = runCli(["docs", "mutate"]);
-    expect(result.stdout).toContain("#mutation-testing-test---mutate");
+    expect(result.stdout).toContain("docs-site/testing/mutation-testing.md#mutation-testing-test---mutate");
   });
 
-  it("with no topic, prints the bare README URL", () => {
+  it("with no topic, prints the docs-site index URL", () => {
     const result = runCli(["docs"]);
-    expect(result.stdout).toContain("https://github.com/Hung1510/Eco-Faker#readme");
+    expect(result.stdout).toContain("https://github.com/Hung1510/Eco-Faker/blob/main/docs-site/index.md");
   });
 
   it("fails with a list of real available sections for an unmatched topic", () => {
     const result = runCli(["docs", "this-topic-genuinely-does-not-exist"]);
     expect(result.status).not.toBe(0);
-    expect(result.stdout).toContain("No README section matches");
-    expect(result.stdout).toContain("Features");
-    expect(result.stdout).toContain("Roadmap");
+    expect(result.stdout).toContain("No documentation section matches");
+    expect(result.stdout).toContain("docs-site/getting-started/index.md");
+    expect(result.stdout).toContain("docs-site/testing/scenario-testing.md");
   });
 });
 

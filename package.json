@@ -39,7 +39,15 @@
     "config.schema.json",
     "README.md",
     "LICENSE",
-    "assets"
+    "assets",
+    "docs-site/*.md",
+    "docs-site/getting-started",
+    "docs-site/cli",
+    "docs-site/api",
+    "docs-site/adapters",
+    "docs-site/testing",
+    "docs-site/contributing",
+    "docs-site/guides"
   ],
   "workspaces": [
     "examples/*"
