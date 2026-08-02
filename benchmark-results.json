@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-08-01T09:24:55.315Z",
+  "generatedAt": "2026-08-02T04:33:26.537Z",
   "nodeVersion": "v20.20.2",
   "scaleFactor": 1000,
   "seed": 1,
-  "generationMs": 1095.1,
+  "generationMs": 1107.8,
   "totalRecords": 53856,
-  "recordsPerSecond": 49178,
+  "recordsPerSecond": 48615,
   "recordCounts": {
     "categories": 33,
     "brands": 13,
