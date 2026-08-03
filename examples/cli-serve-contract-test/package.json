@@ -1,0 +1,14 @@
+{
+  "name": "example-cli-serve-contract-test",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "CLI-feature example: the core dev loop of `openapi-export` -> `serve` -> `test --contract`, with a real passing case and two real failing cases (missing auth, contract drift). See TUTORIAL.md.",
+  "scripts": {
+    "demo": "node scripts/run-demo.mjs",
+    "ci-smoke-test": "node scripts/run-demo.mjs"
+  },
+  "dependencies": {
+    "eco-faker": "file:../.."
+  }
+}
