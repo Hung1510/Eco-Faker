@@ -10,32 +10,48 @@ import { spawn, spawnSync } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-// Resolve the real my-eco-gen binary directly rather than going through
-// `npx my-eco-gen` -- npx's local-bin lookup occasionally re-invoked the
-// command a second time in this monorepo's hoisted node_modules layout,
-// producing a duplicated transcript. Direct resolution is also just faster
-// (no npx resolution overhead per call) and more predictable for CI.
-const binCandidates = [
-  path.resolve(rootDir, "node_modules/.bin/my-eco-gen"),
-  path.resolve(rootDir, "../../node_modules/.bin/my-eco-gen"),
-];
-const bin = binCandidates.find((p) => existsSync(p));
-if (!bin) {
-  throw new Error(`Couldn't find the my-eco-gen binary in any of:\n${binCandidates.join("\n")}`);
+// Resolve the real CLI entry point via Node's own module resolution against
+// eco-faker's own package.json, rather than trusting npm to have created a
+// `node_modules/.bin/my-eco-gen` symlink. The symlink *should* always be
+// there for a package with a "bin" field, and it reliably was in every
+// local test here (including a from-scratch `npm ci` matching CI's exact
+// step order) -- but it was confirmed missing in real CI at least once,
+// for a reason not reproduced locally, so depend on it as little as
+// possible. `eco-faker` being resolvable as a package is *not* optional --
+// every other example's `import { generate } from "eco-faker"` already
+// requires it to work in this same install -- so resolving off of that is
+// strictly more robust than a second, separate npm behavior (bin-linking)
+// this script doesn't otherwise need at all.
+const require = createRequire(import.meta.url);
+const ecoFakerPackageJsonPath = require.resolve("eco-faker/package.json");
+const ecoFakerRoot = path.dirname(ecoFakerPackageJsonPath);
+const ecoFakerPackageJson = JSON.parse(readFileSync(ecoFakerPackageJsonPath, "utf-8"));
+const binRelativePath =
+  typeof ecoFakerPackageJson.bin === "string" ? ecoFakerPackageJson.bin : ecoFakerPackageJson.bin?.["my-eco-gen"];
+if (!binRelativePath) {
+  throw new Error(`eco-faker's package.json at ${ecoFakerPackageJsonPath} has no "my-eco-gen" bin entry.`);
 }
+const cliPath = path.resolve(ecoFakerRoot, binRelativePath);
+if (!existsSync(cliPath)) {
+  throw new Error(`Resolved eco-faker's bin entry to ${cliPath}, but that file doesn't exist -- was \`npm run build\` run?`);
+}
+// Invoke as `node <cliPath> <args>` throughout, instead of executing a bin
+// symlink directly -- sidesteps the symlink question entirely.
+const bin = process.execPath; // the current `node` binary
 const PORT = 4900;
 const API_KEY = "SECRET123";
 const CONTRACT_PATH = path.join(rootDir, "openapi.json");
 const DRIFTED_CONTRACT_PATH = path.join(rootDir, "openapi-drifted.json");
 
 function run(args) {
-  const result = spawnSync(bin, args, { cwd: rootDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+  const result = spawnSync(bin, [cliPath, ...args], { cwd: rootDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
   if (result.status !== 0) {
-    throw new Error(`${bin} ${args.join(" ")} exited ${result.status}\n${result.stdout}${result.stderr}`);
+    throw new Error(`node ${cliPath} ${args.join(" ")} exited ${result.status}\n${result.stdout}${result.stderr}`);
   }
   return result.stdout;
 }
@@ -47,7 +63,7 @@ function run(args) {
 // without touching the parent's own streams, so capturing "what did this
 // command print" is consistent whether it succeeded or failed.
 function runCapturingFailure(args) {
-  const result = spawnSync(bin, args, { cwd: rootDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+  const result = spawnSync(bin, [cliPath, ...args], { cwd: rootDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
   return { output: result.stdout + result.stderr, status: result.status ?? 1 };
 }
 
@@ -75,7 +91,7 @@ async function main() {
   console.log(`Wrote ${CONTRACT_PATH}`);
 
   section("2. Starting a real mock API (auth required)");
-  const server = spawn(bin, ["serve", "--seed", "42", "--users", "20", "--port", String(PORT), "--api-key", API_KEY, "--quiet"], {
+  const server = spawn(bin, [cliPath, "serve", "--seed", "42", "--users", "20", "--port", String(PORT), "--api-key", API_KEY, "--quiet"], {
     cwd: rootDir,
     stdio: "inherit",
   });
